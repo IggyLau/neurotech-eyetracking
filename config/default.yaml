@@ -1,0 +1,55 @@
+# Default settings. Copy to config/local.yaml and pass --config to override.
+# Run `eyetrack probe` first to find the real camera indices and supported modes.
+
+eye_camera:
+  index: 0              # OV9281 (mono, global shutter, no IR filter)
+  width: 640            # 640x400 allows the highest frame rate on OV9281 modules
+  height: 400
+  fps: 120              # requested; probe reports what macOS actually delivers
+  fourcc: MJPG          # high-fps modes usually need MJPG over USB 2
+  exposure: null        # null = leave camera default; AVFoundation often ignores this
+  flip: false           # set true if the camera is mounted upside down
+
+scene_camera:
+  index: 1              # GC0308 (cover/disable its IR LEDs when used as scene cam)
+  width: 640
+  height: 480
+  fps: 30
+  fourcc: MJPG
+  exposure: null
+  flip: false
+
+recording:
+  output_dir: data
+  eye_codec: MJPG       # near-lossless and cheap to encode at high fps
+  scene_codec: MJPG
+
+pupil:
+  roi: null             # [x, y, w, h] in eye-camera pixels to ignore eyelashes/frame; null = full image
+  threshold_offsets: [5, 15, 25]   # strict / medium / relaxed, added to darkest pixel value
+  search_box: 250       # px square around the darkest point that is searched for the pupil
+  min_area: 300         # px^2; JEO uses 1000 at 640x480 – lower for small pupils at 640x400
+  max_aspect: 3.0
+  min_confidence: 0.6   # frames below this are treated as missing (blink / bad detection)
+
+blinks:
+  min_duration_ms: 50
+  max_duration_ms: 500
+  pad_ms: 25            # samples around a blink that are also dropped (eyelid partly closed)
+
+events:
+  # I-VT thresholds. Velocity is in deg/s when calibrated, otherwise px/s on the eye image.
+  velocity_threshold: 30          # deg/s
+  velocity_threshold_px: 400      # px/s on the eye image when uncalibrated
+  min_saccade_ms: 10
+  min_fixation_ms: 60
+  smoothing_window: 3             # samples, median filter before differentiating
+
+pupil_size:
+  smoothing_ms: 50
+  baseline_ms: 500
+
+calibration:
+  aruco_dict: DICT_4X4_50
+  poly_degree: 2
+  scene_hfov_deg: 60              # GC0308 horizontal field of view, used to convert px error to degrees

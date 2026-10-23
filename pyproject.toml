@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "eyetrack"
+version = "0.1.0"
+description = "Recording and analysis toolkit for the Neurotech@USC DIY eye-tracking glasses (OV9281 eye camera + GC0308 scene camera)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "opencv-python>=4.8",
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "scipy>=1.10",
+    "pyyaml>=6.0",
+    "matplotlib>=3.7",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+# Alternative event detectors to cross-check our own I-VT implementation
+compare = ["pymovements", "remodnav"]
+
+[project.scripts]
+eyetrack = "eyetrack.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

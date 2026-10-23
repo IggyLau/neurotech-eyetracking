@@ -27,6 +27,24 @@ def test_closed_eye_is_not_a_confident_pupil():
     assert not r.found or r.confidence < 0.6
 
 
+def test_glint_removal_and_hull_handle_big_reflection():
+    img = eye_image(320, 200, (50, 50), glint=False)
+    import cv2
+    cv2.rectangle(img, (325, 170), (360, 190), (240, 240, 240), -1)  # window reflection biting the pupil edge
+    r = detect_pupil(img, DetectorParams(glint_kernel=0, refine="angle"))
+    r2 = detect_pupil(img, DetectorParams(glint_kernel=41, refine="hull"))
+    assert r2.found and abs(r2.cx - 320) < 2 and abs(r2.cy - 200) < 2
+    assert np.hypot(r2.cx - 320, r2.cy - 200) <= np.hypot(r.cx - 320, r.cy - 200) + 0.5
+
+
+def test_size_outlier_flags_iris_frames():
+    from eyetrack.pipeline import size_outliers
+    d = np.full(200, 40.0)
+    d[100:103] = 120.0  # iris picked for 3 frames
+    out = size_outliers(d, np.ones(200, bool), fps=120, max_ratio=1.6)
+    assert out[100:103].all() and out.sum() == 3
+
+
 def test_roi_offsets_are_mapped_back_to_full_frame():
     img = eye_image(450, 220, (36, 36))
     r = detect_pupil(img, DetectorParams(roi=(300, 100, 300, 250)))

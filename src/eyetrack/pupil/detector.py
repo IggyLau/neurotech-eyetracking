@@ -20,7 +20,6 @@ from dataclasses import dataclass, field
 import cv2
 import numpy as np
 
-_KERNEL = np.ones((5, 5), np.uint8)
 
 
 @dataclass
@@ -51,14 +50,21 @@ class DetectorParams:
     block: int = 20               # darkest-block size, px
     ignore_border: int = 20
     roi: tuple[int, int, int, int] | None = None   # x, y, w, h
+    glint_kernel: int = 0         # >0: grey-level opening that erases bright glints/reflections smaller than this
+    median_blur: int = 0          # >0: median filter (odd px) against sensor noise / eyelashes
+    close_kernel: int = 5         # morphological closing kernel that fills holes in the dark blob
+    close_iterations: int = 2
+    refine: str = "angle"         # contour clean-up before the final fit: "angle" (JEO), "hull", "none"
+    n_seeds: int = 1              # dark candidate regions to try (1 = JEO: darkest only)
+    score: str = "jeo"            # candidate ranking: "jeo" (favours big blobs) or "shape" (ellipse fit x contrast)
 
     @classmethod
     def from_config(cls, pcfg: dict) -> "DetectorParams":
+        keys = ["search_box", "min_area", "max_aspect", "glint_kernel", "median_blur",
+                "close_kernel", "close_iterations", "refine", "n_seeds", "score", "block"]
+        kw = {k: pcfg[k] for k in keys if k in pcfg}
         return cls(threshold_offsets=tuple(pcfg.get("threshold_offsets", (5, 15, 25))),
-                   search_box=pcfg.get("search_box", 250),
-                   min_area=pcfg.get("min_area", 300),
-                   max_aspect=pcfg.get("max_aspect", 3.0),
-                   roi=tuple(pcfg["roi"]) if pcfg.get("roi") else None)
+                   roi=tuple(pcfg["roi"]) if pcfg.get("roi") else None, **kw)
 
 
 def to_gray(image: np.ndarray) -> np.ndarray:
@@ -76,6 +82,40 @@ def get_darkest_area(gray: np.ndarray, block: int = 20, ignore_border: int = 20)
         mean[:, -b:] = np.inf
     _, _, min_loc, _ = cv2.minMaxLoc(mean)
     return int(min_loc[0]), int(min_loc[1])
+
+
+def get_dark_seeds(gray: np.ndarray, n: int = 1, block: int = 20, ignore_border: int = 20,
+                   min_dist: int = 100) -> list[tuple[int, int]]:
+    """Up to n darkest block centers, at least min_dist apart (n=1 is JEO's single darkest point).
+
+    Several seeds let the detector try the pupil *and* e.g. a mascara clump or a glasses
+    frame, then keep whichever looks most like a pupil.
+    """
+    mean = cv2.blur(gray, (block, block)).astype(np.float32)
+    b = ignore_border + block // 2
+    if mean.shape[0] > 2 * b and mean.shape[1] > 2 * b:
+        mean[:b, :] = np.inf
+        mean[-b:, :] = np.inf
+        mean[:, :b] = np.inf
+        mean[:, -b:] = np.inf
+    seeds = []
+    for _ in range(max(1, n)):
+        _, _, loc, _ = cv2.minMaxLoc(mean)
+        if not np.isfinite(mean[loc[1], loc[0]]):
+            break
+        seeds.append((int(loc[0]), int(loc[1])))
+        cv2.circle(mean, loc, min_dist, float("inf"), -1)
+    return seeds
+
+
+def ellipse_contrast(gray: np.ndarray, contour: np.ndarray, ring_px: int = 12) -> float:
+    """(mean grey just outside the fitted ellipse - mean inside) / 255. Pupils are much darker than the iris."""
+    mask = np.zeros(gray.shape, np.uint8)
+    cv2.ellipse(mask, cv2.fitEllipse(contour), 255, -1)
+    ring = cv2.dilate(mask, np.ones((2 * ring_px + 1, 2 * ring_px + 1), np.uint8)) & ~mask
+    if not mask.any() or not ring.any():
+        return 0.0
+    return float(cv2.mean(gray, ring)[0] - cv2.mean(gray, mask)[0]) / 255.0
 
 
 def apply_binary_threshold(gray: np.ndarray, darkest_value: int, added: int) -> np.ndarray:
@@ -153,30 +193,48 @@ def detect_pupil(image: np.ndarray, params: DetectorParams | None = None) -> Pup
         gray = gray_full[y:y + h, x:x + w]
         ox, oy = x, y
 
-    darkest = get_darkest_area(gray, params.block, params.ignore_border)
-    darkest_value = int(cv2.blur(gray, (5, 5))[darkest[1], darkest[0]])
+    if params.median_blur:
+        gray = cv2.medianBlur(gray, params.median_blur)
+    if params.glint_kernel:
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (params.glint_kernel, params.glint_kernel))
+        gray = cv2.morphologyEx(gray, cv2.MORPH_OPEN, k)
+    close_k = np.ones((params.close_kernel, params.close_kernel), np.uint8)
+
+    seeds = get_dark_seeds(gray, params.n_seeds, params.block, params.ignore_border, params.search_box // 2)
+    darkest = seeds[0]
+    blurred = cv2.blur(gray, (5, 5))
 
     best_score, best_contour, best_ratio = 0.0, None, 0.0
-    for offset in sorted(params.threshold_offsets, reverse=True):  # relaxed -> strict, as in JEO
-        binary = mask_outside_square(apply_binary_threshold(gray, darkest_value, offset),
-                                     darkest, params.search_box)
-        # JEO dilates here to fill glints/eyelash gaps; a closing (dilate then erode) fills
-        # them the same way without inflating the pupil, so diameters stay unbiased
-        closed = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, _KERNEL, iterations=2)
-        contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        contour = filter_contours_by_area_and_return_largest(contours, params.min_area, params.max_aspect)
-        if contour is None or len(contour) <= 5:
-            continue
-        filled = check_ellipse_goodness(closed, contour)
-        n_thick, ratio = check_contour_pixels(contour, closed.shape)
-        score = filled * n_thick * n_thick * ratio
-        if score > best_score:
-            best_score, best_contour, best_ratio = score, contour, ratio
+    for seed in seeds:
+        seed_value = int(blurred[seed[1], seed[0]])
+        for offset in sorted(params.threshold_offsets, reverse=True):  # relaxed -> strict, as in JEO
+            binary = mask_outside_square(apply_binary_threshold(gray, seed_value, offset),
+                                         seed, params.search_box)
+            # JEO dilates here to fill glints/eyelash gaps; a closing (dilate then erode) fills
+            # them the same way without inflating the pupil, so diameters stay unbiased
+            closed = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, close_k, iterations=params.close_iterations)
+            contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            contour = filter_contours_by_area_and_return_largest(contours, params.min_area, params.max_aspect)
+            if contour is None or len(contour) <= 5:
+                continue
+            filled = check_ellipse_goodness(closed, contour)
+            n_thick, ratio = check_contour_pixels(contour, closed.shape)
+            if params.score == "jeo":
+                score = filled * n_thick * n_thick * ratio
+            else:  # "shape": elliptical, solid and darker than its surroundings - size-independent
+                score = filled * ratio * max(ellipse_contrast(gray, contour), 0.0)
+            if score > best_score:
+                best_score, best_contour, best_ratio = score, contour, ratio
 
     result = PupilResult(found=False, darkest=(darkest[0] + ox, darkest[1] + oy))
     if best_contour is None:
         return result
-    refined = optimize_contours_by_angle(best_contour)
+    if params.refine == "angle":
+        refined = optimize_contours_by_angle(best_contour)
+    elif params.refine == "hull":  # convex hull bridges bites taken out by reflections / eyelids
+        refined = cv2.convexHull(best_contour)
+    else:
+        refined = best_contour
     if len(refined) < 5:
         refined = best_contour
     (cx, cy), (w, h), angle = cv2.fitEllipse(refined)

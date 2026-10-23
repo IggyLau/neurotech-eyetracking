@@ -85,7 +85,26 @@ def run_pupil_stage(inp: dict, cfg: dict, annotate: bool = False, max_frames: in
     t_s, t0_ns = load_timestamps(inp["eye_ts"], len(df), fps)
     df.insert(1, "t_s", t_s[:len(df)])
     df["valid"] = df.found & (df.confidence >= cfg["pupil"]["min_confidence"])
+    df["size_outlier"] = size_outliers(df.diameter_px.to_numpy(), df.valid.to_numpy(), fps,
+                                       cfg["pupil"].get("max_size_ratio", 0))
+    df["valid"] &= ~df.size_outlier
     return df, ellipses, t0_ns
+
+
+def size_outliers(diameter: np.ndarray, valid: np.ndarray, fps: float, max_ratio: float,
+                  window_s: float = 2.0) -> np.ndarray:
+    """Frames whose diameter is > max_ratio x (or < 1/max_ratio x) the rolling median of valid frames.
+
+    The pupil cannot change size several-fold between frames, so these are usually the
+    iris, an eyelash shadow or an eyelid crease picked instead of the pupil.
+    """
+    if not max_ratio:
+        return np.zeros(len(diameter), bool)
+    d = pd.Series(np.where(valid, diameter, np.nan))
+    win = max(3, int(window_s * (fps or 30)))
+    ref = d.rolling(win, center=True, min_periods=max(3, win // 10)).median().bfill().ffill()
+    ratio = np.asarray(diameter) / ref.to_numpy()
+    return np.isfinite(ratio) & ((ratio > max_ratio) | (ratio < 1 / max_ratio))
 
 
 def load_markers(inp: dict, t0_ns: int) -> pd.DataFrame:
@@ -120,7 +139,9 @@ def process(path: str | Path, cfg: dict, calibration: str | Path | None = None,
 
     # blinks
     bcfg = cfg["blinks"]
-    blinks = blinks_mod.detect_blinks(t, pupil.valid.to_numpy(), bcfg["min_duration_ms"], bcfg["max_duration_ms"])
+    blinks = blinks_mod.detect_blinks(t, pupil.valid.to_numpy(), bcfg["min_duration_ms"], bcfg["max_duration_ms"],
+                                      bcfg.get("merge_gap_ms", 0), pupil.confidence.to_numpy(),
+                                      bcfg.get("max_blink_confidence", 1.0))
     in_blink = blinks_mod.blink_mask(t, blinks, bcfg["pad_ms"])
     pupil["in_blink"] = in_blink
     good = pupil.valid.to_numpy() & ~in_blink
@@ -139,14 +160,13 @@ def process(path: str | Path, cfg: dict, calibration: str | Path | None = None,
         print(f"  eye model not fitted: {e}")
 
     # fixations / saccades (degrees if we have the eye model, else eye-image pixels)
-    ecfg = cfg["events"]
+    ev_kwargs = events_mod.event_kwargs(cfg["events"])
     if eye_model is not None:
-        ex, ey, unit, thr = pupil.yaw_deg, pupil.pitch_deg, "deg", ecfg["velocity_threshold"]
+        ex, ey, unit = pupil.yaw_deg, pupil.pitch_deg, "deg"
     else:
-        ex, ey, unit, thr = pupil.cx, pupil.cy, "px", ecfg["velocity_threshold_px"]
-    saccades, fixations, labels = events_mod.detect_events(
-        t, ex.to_numpy(), ey.to_numpy(), good, thr, ecfg["min_saccade_ms"], ecfg["min_fixation_ms"],
-        ecfg["smoothing_window"])
+        ex, ey, unit = pupil.cx, pupil.cy, "px"
+        ev_kwargs.update(threshold=cfg["events"]["velocity_threshold_px"], min_amplitude=0)
+    saccades, fixations, labels = events_mod.detect_events(t, ex.to_numpy(), ey.to_numpy(), good, **ev_kwargs)
     pupil["event"] = labels
 
     markers = load_markers(inp, t0_ns)

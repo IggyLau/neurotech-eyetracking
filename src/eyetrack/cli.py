@@ -80,6 +80,24 @@ def cmd_process(args, cfg):
     process(args.path, cfg, args.calibration, aois, args.annotate, args.overlay, args.max_frames)
 
 
+def cmd_benchmark(args, cfg):
+    import pandas as pd
+    pd.set_option("display.width", 200)
+    pd.set_option("display.precision", 3)
+    if args.dataset == "lund":
+        from .benchmark import lund
+        root = args.root or "data/datasets/lund2013"
+        print("Expert vs expert saccade agreement (ceiling):", lund.human_ceiling(Path(root)))
+        df = lund.run(root, cfg, rates=args.rates, noises=args.noise)
+        print(lund.summarise(df).to_string())
+    else:
+        from .benchmark import lpw
+        from .pupil.detector import DetectorParams
+        root = args.root or "data/datasets/lpw"
+        df = lpw.run(root, DetectorParams.from_config(cfg["pupil"]), step=args.step)
+        print(json.dumps(lpw.summarise(df, cfg["pupil"]["min_confidence"]), indent=2))
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="eyetrack", description=__doc__)
     p.add_argument("--config", help="YAML file overriding config/default.yaml")
@@ -114,6 +132,14 @@ def main(argv=None):
     s.add_argument("--overlay", action="store_true", help="also write overlay.mp4 (gaze on scene)")
     s.add_argument("--max-frames", type=int)
     s.set_defaults(func=cmd_process)
+
+    s = sub.add_parser("benchmark", help="score detectors against labelled datasets in data/datasets/")
+    s.add_argument("dataset", choices=["lund", "lpw"])
+    s.add_argument("--root", help="dataset folder (default data/datasets/lund2013 or data/datasets/lpw)")
+    s.add_argument("--rates", type=float, nargs="+", default=[500, 120, 60, 24], help="lund: simulated Hz")
+    s.add_argument("--noise", type=float, nargs="+", default=[0.0, 0.2, 0.5], help="lund: added noise, deg")
+    s.add_argument("--step", type=int, default=10, help="lpw: evaluate every Nth frame")
+    s.set_defaults(func=cmd_benchmark)
 
     args = p.parse_args(argv)
     cfg = load_config(args.config)

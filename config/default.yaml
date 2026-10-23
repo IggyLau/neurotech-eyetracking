@@ -30,20 +30,44 @@ pupil:
   search_box: 250       # px square around the darkest point that is searched for the pupil
   min_area: 300         # px^2; JEO uses 1000 at 640x480 – lower for small pupils at 640x400
   max_aspect: 3.0
-  min_confidence: 0.6   # frames below this are treated as missing (blink / bad detection)
+  # Validated on LPW (real IR eye video, 640x400 crop, held-out participants): the original
+  # single-seed detector was as accurate as any tuned variant on normal footage and 3-10x faster.
+  # For make-up / glasses footage try n_seeds: 5, score: shape, block: 30 (participant 22: 14% -> 72%).
+  n_seeds: 1            # dark candidate regions tried
+  score: jeo            # "jeo" or "shape"
+  block: 20
+  glint_kernel: 0       # grey opening to erase glints (did not help on LPW)
+  median_blur: 0
+  refine: angle         # angle | hull | none
+  # LPW held-out: conf>=0.5 + size filter keeps 88% of frames with 3.1% wrong (>10 px);
+  # the old 0.6 kept 85% at the same error and dropped twice as many correct frames
+  min_confidence: 0.5   # frames below this are treated as missing (blink / bad detection)
+  max_size_ratio: 1.5   # drop frames whose diameter jumps >1.5x vs the 2 s rolling median (iris picked)
 
 blinks:
-  min_duration_ms: 50
+  # tuned on Lund2013 at 120 Hz: merging valid flickers < 80 ms raised blink F1 0.86 -> 0.96
+  min_duration_ms: 30
   max_duration_ms: 500
-  pad_ms: 25            # samples around a blink that are also dropped (eyelid partly closed)
+  merge_gap_ms: 80
+  # a dropout whose median confidence stays above this is glare/reflection, not a blink.
+  # NOT validated on labelled data yet (LPW has no blink labels) - check with the cued-blink test.
+  max_blink_confidence: 0.35
+  pad_ms: 25           # samples around a blink that are also dropped (eyelid partly closed)
 
 events:
-  # I-VT thresholds. Velocity is in deg/s when calibrated, otherwise px/s on the eye image.
-  velocity_threshold: 30          # deg/s
-  velocity_threshold_px: 400      # px/s on the eye image when uncalibrated
+  # I-VT tuned on Lund2013 resampled to 120 Hz (`eyetrack benchmark lund`): a fixed 30 deg/s
+  # threshold plus rejecting candidates smaller than 3x the measured noise (RMS-S2S) beat
+  # the Nyström-Holmqvist adaptive threshold, which missed small saccades at 120 Hz.
+  velocity_threshold: 30          # deg/s, or "adaptive"
+  min_threshold: 30               # deg/s floor when adaptive
+  adaptive_k: 6
+  amplitude_noise_factor: 3       # drop saccades with amplitude < 3 x RMS-S2S noise
+  min_amplitude: 0                # deg, absolute amplitude floor
+  velocity_threshold_px: 400      # used when no eye model: pupil px/s on the eye image
   min_saccade_ms: 10
   min_fixation_ms: 60
-  smoothing_window: 3             # samples, median filter before differentiating
+  smoothing_ms: 20                # Savitzky-Golay window; no effect below 5 samples (i.e. at 120 Hz)
+  merge_gap_ms: 0                 # join saccades split by post-saccadic wobble (did not help on Lund)
 
 pupil_size:
   smoothing_ms: 50

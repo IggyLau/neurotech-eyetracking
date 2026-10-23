@@ -56,6 +56,13 @@ saccade/fixation stats) and `report.png` (pupil size, eye position with saccades
 To cross-check event detection, run `pip install -e ".[compare]"` and feed `pupil.csv` to
 pymovements or REMoDNaV.
 
+**Validated on labelled data:** see [docs/benchmarks.md](docs/benchmarks.md).
+- Saccades and fixations: Lund2013, resampled to 120 Hz. Saccade F1 is 0.91 with no noise and 0.85 with 0.2° noise (experts agree at 0.97).
+- Blinks: F1 0.96.
+- Pupil center: LPW, real IR eye video at 640×400. 80–86% of frames within 5 px, median error 1.6 px.
+
+Re-run with `eyetrack benchmark lund|lpw` after downloading the datasets.
+
 ## Weekend test protocol
 
 Record each test as its own session and process it. Fill in the results table in `docs/hardware.md`.

@@ -21,6 +21,38 @@ def test_ivt_finds_every_saccade_with_correct_amplitude():
     assert set(labels) <= {"fix", "sac", "none"}
 
 
+def test_amplitude_noise_filter_rejects_noise_saccades():
+    t, x, y, onsets = step_trace(fs=120, n_steps=10, step_deg=10, noise=0.5)
+    raw, _, _ = detect_events(t, x, y, threshold=30)
+    filtered, _, _ = detect_events(t, x, y, threshold=30, amplitude_noise_factor=3)
+    assert len(raw) > 2 * len(onsets)            # noise at 120 Hz exceeds 30 deg/s often
+    assert len(filtered) < len(raw) / 2          # most noise bursts removed...
+    assert len(onsets) <= len(filtered) <= len(onsets) + 5  # ...all real ones kept (a few big bursts survive)
+    assert filtered.attrs["noise_rms_s2s"] > 0.5
+
+
+def test_adaptive_threshold_rises_with_noise():
+    t, x, y, _ = step_trace(fs=120, noise=0.05)
+    clean, _, _ = detect_events(t, x, y, threshold="adaptive", min_threshold=0)
+    t, x, y, _ = step_trace(fs=120, noise=0.5)
+    noisy, _, _ = detect_events(t, x, y, threshold="adaptive", min_threshold=0)
+    assert noisy.attrs["velocity_threshold"] > 3 * clean.attrs["velocity_threshold"]
+
+
+def test_blink_merge_and_low_confidence_dropouts():
+    fs = 120
+    t = np.arange(fs * 4) / fs
+    valid = np.ones_like(t, bool)
+    valid[(t >= 1.0) & (t < 1.08)] = False   # blink interrupted by a 30 ms flicker
+    valid[(t >= 1.11) & (t < 1.2)] = False
+    valid[(t >= 3.0) & (t < 3.2)] = False    # glare: detector still half-sure
+    conf = np.where(valid, 0.9, 0.1)
+    conf[(t >= 3.0) & (t < 3.2)] = 0.5
+    b = detect_blinks(t, valid, 30, 500, merge_gap_ms=80, confidence=conf, max_blink_confidence=0.35)
+    assert (b.kind == "blink").sum() == 1
+    assert (b.kind == "low_confidence").sum() == 1
+
+
 def test_blinks_vs_dropouts_vs_closed():
     fs = 120
     t = np.arange(fs * 10) / fs

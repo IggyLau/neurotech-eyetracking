@@ -101,7 +101,7 @@ Record each check as its own session with `eyetrack record`, then run `eyetrack 
 |---|---|---|
 | Detection | Look at 9 points spread across the field of view for 30 s | `valid_rate` > 0.95 in `metrics_summary.json` |
 | Signal noise | Any steady fixation | Low `noise_rms_s2s_deg`. Compare with the noise levels in [benchmarks.md](benchmarks.md). |
-| Pupil response | Steady light 10 s → press `1`, lights off 10 s → press `2`, lights on | Clear diameter increase after `lights_off` in `report.png` |
+| Pupil response | Steady light 10 s → press `1`, lights off 10 s → press `2`, lights on | Clear diameter increase after `lights_off` in `pupil_epochs.png` |
 | Saccades | Alternate between two targets ~10° apart (~10 cm apart at 57 cm), once per second for 30 s | ~30 saccades of consistent amplitude |
 | Blinks | Press `b` and blink, 10 times | `blink_count` = 10 |
 | Gaze accuracy | `eyetrack calibrate` | Validation error < 2° |

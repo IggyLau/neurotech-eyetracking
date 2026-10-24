@@ -6,7 +6,7 @@ from eyetrack.calibration.mapping import PolyMapper
 from eyetrack.metrics.aoi import aoi_metrics
 from eyetrack.metrics.blinks import detect_blinks
 from eyetrack.metrics.events import detect_events
-from eyetrack.metrics.pupil_size import baseline_correct, clean_diameter
+from eyetrack.metrics.pupil_size import baseline_correct, clean_diameter, marker_epochs
 
 from synthetic import step_trace
 
@@ -96,3 +96,21 @@ def test_aoi_dwell_and_revisits():
     assert out.loc["left", "dwell_ms"] == 1500
     assert out.loc["left", "entries"] == 2 and out.loc["left", "revisits"] == 1
     assert out.loc["right", "fixations"] == 1
+
+
+def test_marker_epochs_end_at_next_marker_and_measure_change():
+    fs = 120
+    t = np.arange(fs * 12) / fs
+    d = np.full_like(t, 40.0)
+    d[(t >= 3) & (t < 6)] = 34.0     # constriction while a light is on
+    d[(t >= 6) & (t < 9)] = 44.0     # dilation during a task
+    markers = pd.DataFrame({"t_s": [3.0, 6.0, 9.0, 10.0], "label": ["lights_on", "task_start", "task_end", "blink_cue"]})
+    samples, summ = marker_epochs(t, d, markers, ["lights_on", "task_start", "task_end"], baseline_ms=500)
+    assert list(summ.label) == ["lights_on", "task_start", "task_end"]   # blink_cue is not an epoch label
+    assert summ.window_s.tolist() == pytest.approx([3.0, 3.0, 1.0])     # each epoch stops at the next marker
+    on, task = summ.iloc[0], summ.iloc[1]
+    assert on.baseline_px == pytest.approx(40)
+    assert on.min_change_pct == pytest.approx(-15, abs=0.1)
+    assert task.baseline_px == pytest.approx(34)
+    assert task.max_change_pct == pytest.approx(100 * 10 / 34, abs=0.1)
+    assert set(samples.event) == {0, 1, 2}

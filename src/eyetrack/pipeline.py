@@ -171,6 +171,12 @@ def process(path: str | Path, cfg: dict, calibration: str | Path | None = None,
 
     markers = load_markers(inp, t0_ns)
 
+    # pupil change after each marker (light reflex, task-evoked dilation)
+    pcfg = cfg["pupil_size"]
+    epochs, epoch_summary = pupil_size.marker_epochs(
+        t, pupil.diameter_clean_px.to_numpy(), markers, pcfg.get("epoch_labels", []),
+        pcfg["baseline_ms"], pcfg.get("epoch_max_s", 30))
+
     # gaze in scene coordinates
     gaze = None
     scene_t = load_scene_times(inp, t0_ns)
@@ -198,6 +204,7 @@ def process(path: str | Path, cfg: dict, calibration: str | Path | None = None,
         "eye_model": eye_model.to_dict() if eye_model else None,
         **pupil_size.summary(pupil.diameter_clean_px.to_numpy()),
         **events_mod.summary(saccades, fixations, duration, unit),
+        "pupil_epochs": epoch_summary.to_dict(orient="records"),
     }
 
     if aois and calibration:
@@ -212,10 +219,14 @@ def process(path: str | Path, cfg: dict, calibration: str | Path | None = None,
     fixations.to_csv(out / "fixations.csv", index=False)
     if len(markers):
         markers.to_csv(out / "markers_s.csv", index=False)
+    if len(epoch_summary):
+        epochs.to_csv(out / "pupil_epochs.csv", index=False)
+        epoch_summary.to_csv(out / "pupil_epochs_summary.csv", index=False)
     (out / "metrics_summary.json").write_text(json.dumps(summary, indent=2, default=_json_default))
 
     from .viz import plots
     plots.timeseries_report(pupil, saccades, blinks, markers, out / "report.png", unit)
+    plots.epochs_report(epochs, out / "pupil_epochs.png")
     if gaze is not None and inp["scene_video"] and Path(inp["scene_video"]).exists():
         plots.scene_heatmap(inp["scene_video"], fixations, out / "heatmap.png")
         if overlay:
@@ -250,6 +261,9 @@ def _print_summary(s: dict):
         v = s.get(k)
         if v is not None:
             print(f"    {k:28s} {v:.3f}" if isinstance(v, float) else f"    {k:28s} {v}")
+    for e in s.get("pupil_epochs", []):
+        print(f"    epoch {e['event']} {e['label']:<11s} at {e['onset_s']:6.1f}s  baseline {e['baseline_px']:.1f}px  "
+              f"mean {e['mean_change_pct']:+.1f}%  min {e['min_change_pct']:+.1f}%  max {e['max_change_pct']:+.1f}%")
 
 
 # ---------------------------------------------------------------- calibration

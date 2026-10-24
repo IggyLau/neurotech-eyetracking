@@ -52,3 +52,7 @@ def test_process_session_end_to_end(tmp_path):
     sacc = pd.read_csv(session / "saccades.csv")
     assert 40 < np.median(sacc.amplitude) < 60  # true horizontal amplitude 50 deg
     assert json.loads((session / "metrics_summary.json").read_text())["frames"] == 720
+    # the task_start marker at 3 s gives one epoch; the pupil size never changes
+    assert (session / "pupil_epochs.csv").exists() and (session / "pupil_epochs.png").exists()
+    (ep,) = summary["pupil_epochs"]
+    assert ep["label"] == "task_start" and abs(ep["mean_change_pct"]) < 5

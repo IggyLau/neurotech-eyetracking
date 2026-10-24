@@ -21,19 +21,27 @@ def cmd_live(args, cfg):
     """Live pupil-detection preview for positioning the camera and tuning LEDs/exposure."""
     import cv2
     from .capture.camera import Camera
+    from .capture.recorder import MARKER_KEYS
     from .pupil.detector import DetectorParams, detect_pupil, draw_result
+    from .viz.live import PupilTrace, with_trace
 
     params = DetectorParams.from_config(cfg["pupil"])
+    trace = PupilTrace(min_confidence=cfg["pupil"]["min_confidence"],
+                       baseline_s=cfg["pupil_size"]["baseline_ms"] / 1000)
     cam = Camera.from_config(cfg["eye_camera"], "eye").start()
-    print("Live view. Keys: q=quit. Aim for a dark round pupil, small glints, confidence > 0.8.")
+    print("Live view. Keys: q=quit, m (or 1-4, b) = mark the trace (not saved). "
+          "Aim for a dark round pupil, small glints, confidence > 0.8.")
     t_last, n_last, fps = time.perf_counter(), 0, 0.0
+    last_index = -1
     try:
         while True:
             f = cam.latest()
-            if f is None:
-                time.sleep(0.01)
+            if f is None or f.index == last_index:
+                time.sleep(0.002)
                 continue
+            last_index = f.index
             r = detect_pupil(f.image, params)
+            trace.add(f.t_ns / 1e9, r)
             vis = draw_result(f.image, r)
             now = time.perf_counter()
             if now - t_last >= 1:
@@ -43,9 +51,12 @@ def cmd_live(args, cfg):
             if params.roi:
                 x, y, w, h = params.roi
                 cv2.rectangle(vis, (x, y), (x + w, y + h), (255, 0, 255), 1)
-            cv2.imshow("eyetrack live", vis)
-            if cv2.waitKey(1) & 0xFF == ord("q"):
+            cv2.imshow("eyetrack live", with_trace(vis, trace))
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord("q"):
                 break
+            if key in MARKER_KEYS:
+                trace.mark(time.perf_counter(), MARKER_KEYS[key])
     finally:
         cam.stop()
         cv2.destroyAllWindows()

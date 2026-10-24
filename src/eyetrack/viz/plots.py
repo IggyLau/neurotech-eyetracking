@@ -57,6 +57,27 @@ def timeseries_report(pupil: pd.DataFrame, saccades: pd.DataFrame, blinks: pd.Da
     plt.close(fig)
 
 
+def epochs_report(epochs: pd.DataFrame, path: Path):
+    """Baseline-corrected pupil change after each marker, one panel per marker label."""
+    if epochs.empty:
+        return
+    labels = list(dict.fromkeys(epochs.label))
+    fig, axes = plt.subplots(len(labels), 1, figsize=(10, 2.6 * len(labels)), squeeze=False)
+    for ax, label in zip(axes[:, 0], labels):
+        sel = epochs[epochs.label == label]
+        for k, ep in sel.groupby("event"):
+            ax.plot(ep.t_rel_s, ep.change_pct, lw=1, label=f"#{k}")
+        ax.axvline(0, color="purple", lw=0.8, ls="--")
+        ax.axhline(0, color="0.6", lw=0.6)
+        ax.set_title(label, fontsize=9, loc="left")
+        ax.set_ylabel("change from baseline (%)")
+        ax.legend(loc="upper right", fontsize=7)
+    axes[-1, 0].set_xlabel("time from marker (s)")
+    fig.tight_layout()
+    fig.savefig(path, dpi=120)
+    plt.close(fig)
+
+
 def _middle_frame(video: Path) -> np.ndarray | None:
     cap = cv2.VideoCapture(str(video))
     n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))

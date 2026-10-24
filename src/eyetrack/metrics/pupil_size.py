@@ -51,6 +51,46 @@ def baseline_correct(t_s: np.ndarray, diameter: np.ndarray, events_s: list[float
     return pd.DataFrame(rows)
 
 
+def marker_epochs(t_s: np.ndarray, diameter: np.ndarray, markers: pd.DataFrame, labels: list[str],
+                  baseline_ms: float = 500, max_window_s: float = 30.0) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Baseline-corrected epochs after each marker whose label is in `labels`.
+
+    Each epoch runs until the next marker (of any label) or max_window_s, so a
+    task_start epoch covers the task and a lights_on epoch covers the light period.
+    Returns (long table of samples, one summary row per epoch).
+    """
+    t_s = np.asarray(t_s, float)
+    diameter = np.asarray(diameter, float)
+    m = markers.sort_values("t_s").reset_index(drop=True)
+    samples, rows = [], []
+    for i, mk in m.iterrows():
+        if mk.label not in labels or not (t_s[0] < mk.t_s < t_s[-1]):
+            continue
+        end = m.t_s[i + 1] if i + 1 < len(m) else t_s[-1]
+        window = float(min(max_window_s, end - mk.t_s))
+        ep = baseline_correct(t_s, diameter, [mk.t_s], baseline_ms, window)
+        k = len(rows)
+        ep["event"], ep["label"] = k, mk.label
+        samples.append(ep)
+        post = ep[ep.t_rel_s >= 0]
+        pct = post.change_pct.to_numpy()
+        ok = np.isfinite(pct)
+        base = ep[ep.t_rel_s < 0].diameter
+        rows.append({
+            "event": k, "label": mk.label, "onset_s": float(mk.t_s), "window_s": window,
+            "baseline_px": float(base.mean()) if base.notna().any() else np.nan,
+            "mean_change_pct": float(pct[ok].mean()) if ok.any() else np.nan,
+            "min_change_pct": float(pct[ok].min()) if ok.any() else np.nan,
+            "t_min_s": float(post.t_rel_s.to_numpy()[ok][pct[ok].argmin()]) if ok.any() else np.nan,
+            "max_change_pct": float(pct[ok].max()) if ok.any() else np.nan,
+            "t_max_s": float(post.t_rel_s.to_numpy()[ok][pct[ok].argmax()]) if ok.any() else np.nan,
+            "valid_fraction": float(ok.mean()) if len(ok) else 0.0,
+        })
+    samples = pd.concat(samples, ignore_index=True) if samples else pd.DataFrame(
+        columns=["event", "label", "t_rel_s", "diameter", "change", "change_pct"])
+    return samples, pd.DataFrame(rows)
+
+
 def summary(diameter: np.ndarray) -> dict:
     d = np.asarray(diameter, float)
     return {"pupil_diameter_mean_px": float(np.nanmean(d)) if np.isfinite(d).any() else None,

@@ -42,7 +42,7 @@ On macOS, the terminal app needs camera access:
 ```bash
 eyetrack probe                       # list connected cameras
 eyetrack probe --index 0             # measure real frame rates for each mode of camera 0
-eyetrack live                        # live pupil detection on the eye camera
+eyetrack live                        # live pupil detection and a 10 s pupil-size trace
 eyetrack calibrate                   # screen calibration; writes data/<session>/calibration.json
 eyetrack record --name task1         # record eye + scene video until q is pressed
 eyetrack process data/<session> --calibration data/<cal-session>/calibration.json --overlay
@@ -100,6 +100,7 @@ eyetrack --config config/local.yaml record
 | `aoi.csv` | Area-of-interest metrics (with `--calibration` and `--aois`) |
 | `metrics_summary.json` | Session summary: sample rate, detection rate, signal noise, blink rate, saccade and fixation statistics |
 | `report.png` | Pupil size, eye position with saccades, confidence and markers over time |
+| `pupil_epochs.csv`, `pupil_epochs_summary.csv`, `pupil_epochs.png` | Pupil change (%) after each marker (`lights_off`, `lights_on`, `task_start`, `task_end`, `marker`), relative to the 0.5 s before it; each epoch runs to the next marker |
 | `heatmap.png`, `overlay.mp4` | Fixation heatmap and gaze overlay on the scene video (with `--calibration`; overlay needs `--overlay`) |
 | `eye_annotated.mp4` | Eye video with the detected pupil drawn on it (`--annotate`) |
 

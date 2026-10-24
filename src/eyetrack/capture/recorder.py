@@ -22,6 +22,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from ..pupil.detector import DetectorParams, detect_pupil, draw_result
+from ..viz.live import PupilTrace, with_trace
 from .camera import Camera, Frame
 
 # Keys that drop a labelled marker into markers.csv, for test protocols
@@ -99,6 +101,13 @@ def record(cfg: dict, name: str | None = None, duration: float | None = None,
         "cameras": {k: c.actual for k, c in cams.items()},
     }
 
+    # Preview-only pupil detection on the main thread: it sees the newest frame at preview
+    # rate and never slows the grab threads that write the recording.
+    params = DetectorParams.from_config(cfg["pupil"])
+    trace = PupilTrace(min_confidence=cfg["pupil"]["min_confidence"],
+                       baseline_s=cfg["pupil_size"]["baseline_ms"] / 1000)
+    last_eye_index, eye_vis = -1, None
+
     print(f"Recording to {session}")
     print("Keys: q=stop  1=lights off  2=lights on  3=task start  4=task end  b=blink cue  m=marker")
     for cam in cams.values():
@@ -128,11 +137,21 @@ def record(cfg: dict, name: str | None = None, duration: float | None = None,
                 tiles = []
                 for k, cam in cams.items():
                     f = cam.latest()
-                    if f is not None:
-                        img = cv2.resize(f.image, (480, int(480 * f.image.shape[0] / f.image.shape[1])))
-                        cv2.putText(img, f"{k}: {cam.frame_count}", (8, 22),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-                        tiles.append(img)
+                    if f is None:
+                        continue
+                    if k == "eye":
+                        if f.index != last_eye_index:
+                            last_eye_index = f.index
+                            r = detect_pupil(f.image, params)
+                            trace.add(f.t_ns / 1e9, r)
+                            eye_vis = draw_result(f.image, r)
+                        src = eye_vis
+                    else:
+                        src = f.image
+                    img = cv2.resize(src, (480, int(480 * src.shape[0] / src.shape[1])))
+                    cv2.putText(img, f"{k}: {cam.frame_count}", (8, img.shape[0] - 10),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                    tiles.append(with_trace(img, trace) if k == "eye" else img)
                 if tiles:
                     h = max(t.shape[0] for t in tiles)
                     tiles = [cv2.copyMakeBorder(t, 0, h - t.shape[0], 0, 0, cv2.BORDER_CONSTANT) for t in tiles]
@@ -146,6 +165,7 @@ def record(cfg: dict, name: str | None = None, duration: float | None = None,
                 t_ns = time.perf_counter_ns()
                 markers.writerow([t_ns, MARKER_KEYS[key]])
                 markers_file.flush()
+                trace.mark(t_ns / 1e9, MARKER_KEYS[key])
                 print(f"  marker: {MARKER_KEYS[key]}")
     finally:
         elapsed = time.perf_counter() - t0

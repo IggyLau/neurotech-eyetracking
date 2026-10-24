@@ -72,6 +72,9 @@ events:
 pupil_size:
   smoothing_ms: 50
   baseline_ms: 500
+  # markers that start a baseline-corrected epoch (pupil_epochs.csv); each epoch runs to the next marker
+  epoch_labels: [lights_off, lights_on, task_start, task_end, marker]
+  epoch_max_s: 30
 
 calibration:
   aruco_dict: DICT_4X4_50

@@ -1,8 +1,8 @@
 # Benchmarks against labelled data
 
-Real, hand-labelled datasets are used to tune and validate each measurement. They are
-**downloaded into `data/datasets/` and never committed**: their licences (GPL-3.0 and CC BY-NC 3.0)
-differ from this repo's MIT licence.
+Each measurement is tuned and validated against public, hand-labelled datasets. The datasets are
+not redistributed with this repository because their licences (GPL-3.0 and CC BY-NC 3.0) differ from its
+MIT licence. Download them into `data/datasets/`, which is gitignored:
 
 ```bash
 git clone https://github.com/richardandersson/EyeMovementDetectorEvaluation data/datasets/lund2013
@@ -13,13 +13,13 @@ eyetrack benchmark lpw           # pupil detection
 
 | Dataset | What it is | Used for |
 |---|---|---|
-| **Lund2013** (Andersson et al. 2017) | 500 Hz gaze from an SMI HiSpeed tracker. Each sample is hand-labelled by two experts as fixation, saccade, post-saccadic wobble, pursuit or blink. Covers image viewing, video and moving dots. | Saccades, fixations and blinks. **Resampled to 120 Hz** to simulate the OV9281, with 0 / 0.2 / 0.5° noise added to simulate a DIY tracker's precision. |
-| **LPW** (Tonsen et al. 2016) | 66 head-mounted dark-pupil IR videos from a Pupil Pro 120 Hz eye camera at 640×480: 22 people, indoor and outdoor, some with glasses or make-up. The pupil center is hand-labelled in every frame. | Pupil detection. Frames are **center-cropped to 640×400** (our OV9281 mode, same pixel scale). |
+| **Lund2013** (Andersson et al. 2017) | 500 Hz gaze from an SMI HiSpeed tracker. Each sample is hand-labelled by two experts as fixation, saccade, post-saccadic wobble, pursuit or blink. Covers image viewing, video and moving dots. | Saccades, fixations and blinks. **Resampled to 120 Hz** to match the OV9281 eye camera, with 0 / 0.2 / 0.5° white noise added to simulate the lower precision of a low-cost tracker. |
+| **LPW** (Tonsen et al. 2016) | 66 head-mounted dark-pupil IR videos from a Pupil Pro 120 Hz eye camera at 640×480: 22 people, indoor and outdoor, some with glasses or make-up. The pupil center is hand-labelled in every frame. | Pupil detection. Frames are **center-cropped to 640×400** (the OV9281's 640×400 mode, same pixel scale). |
 
 To avoid overfitting, settings were **tuned on one half and reported on the other**: Lund image-viewing
 files for tuning, video and dots files held out; LPW participants 1–11 for tuning, 12–22 held out.
-LPW tuning optimises the **no-glasses** videos, because glasses and heavy make-up can be avoided in our
-own sessions; results on all videos are still reported.
+LPW tuning optimises the **no-glasses** videos, because glasses and heavy eye make-up can usually be
+avoided in controlled recordings. Results on all videos are also reported.
 
 ## Saccades, fixations and blinks (Lund2013)
 
@@ -52,12 +52,12 @@ threshold (Nyström & Holmqvist 2010) was also tried: at 120 Hz it missed most s
 | 120 Hz | 0.5° | 0.82 / 0.71 / 0.76 | 0.75° | 18 ms | 32 → 88 ms | 0.84 |
 | 500 Hz | 0° | 0.64 / 0.96 / 0.77 | 0.07° | 2 ms | 27 → 32 ms | 0.97 |
 
-- **120 Hz is the sweet spot for our camera.** At 24 fps a third of saccades are missed and
-  durations are inflated 2.5×. That's why the JEO sample video (24 fps) gave untrustworthy numbers.
+- **Use at least ~120 Hz for saccade analysis.** At 24 fps a third of saccades are missed and
+  durations are inflated 2.5×.
 - Durations are always overestimated by roughly one sample. Compare durations within a study,
   not against published values.
 - The settings are tuned for 120 Hz. At 500 Hz with no noise, precision drops (0.64) because post-saccadic
-  wobble gets split into extra "saccades". Re-tune if we ever record faster.
+  wobble gets split into extra "saccades". Re-tune the event settings when recording at a much higher rate.
 
 ### Blinks at 120 Hz
 
@@ -78,7 +78,7 @@ Metric: % of frames where the detected pupil center is within 5 px of the hand l
 The median center error is 1.6 px. Glint removal, median blur, other threshold offsets, search box,
 closing kernel and contour refinement were all tried (60+ configurations), and none beat
 the default on normal footage. **The default stays the original detector.** The multi-candidate
-mode only rescues heavy make-up and glasses footage, which can be avoided in our sessions. It is available via
+mode mainly helps footage with heavy eye make-up or glasses frames in view. It is available via
 `pupil: {n_seeds: 5, score: shape, block: 30}`.
 
 ### Which frames to trust (confidence cutoff + size filter)
@@ -86,26 +86,26 @@ mode only rescues heavy make-up and glasses footage, which can be avoided in our
 | Setting | Frames kept | Kept frames that are wrong (>10 px) | Correct frames thrown away |
 |---|---|---|---|
 | No filtering | 99.5% | 11.4% | 0% |
-| Old: confidence ≥ 0.6 | 84.7% | 3.1% | 4.9% |
-| **New: confidence ≥ 0.5 + size-jump filter (1.5×)** | **88.0%** | **3.1%** | **2.1%** |
+| Confidence ≥ 0.6 | 84.7% | 3.1% | 4.9% |
+| **Default: confidence ≥ 0.5 + size-jump filter (1.5×)** | **88.0%** | **3.1%** | **2.1%** |
 
-Chosen on participants 1–11 and confirmed on 12–21 (both without P22). The size filter drops
+Chosen on participants 1–11 and confirmed on 12–21, excluding participant 22 (heavy make-up). The size filter drops
 frames whose diameter jumps more than 1.5× against the 2 s rolling median. These are almost always the iris or a
 shadow picked by mistake.
 
 ### Blinks vs glare
 
-A dropout where the detector is still fairly confident (median confidence > 0.35) is now
-labelled `low_confidence`, not `blink`. On the JEO sample video this cut "blinks" from 52 to 3.
-**This threshold is not validated against labels yet** (LPW has no blink labels). Check it with the
-cued-blink test (10 blinks on cue).
+A dropout where the detector is still fairly confident (median confidence > 0.35) is labelled
+`low_confidence`, not `blink`. On the JEOresearch sample video, which has frequent glare, this cut
+reported blinks from 52 to 3. **This threshold has not been validated against labelled blinks**
+(LPW has none). Check it on your own hardware with a cued-blink recording (see
+[hardware.md](hardware.md#verifying-a-build)).
 
-## What these numbers do and don't tell us
+## Limitations of these benchmarks
 
-- Lund is a lab tower tracker with simulated degradation, not our hardware. Our real noise
-  level is unknown until the glasses are built. Every processed session reports it as
-  `noise_rms_s2s_deg` in `metrics_summary.json`. RMS-S2S ≈ noise SD × 1.4, so 0.2° of noise
-  shows up as ~0.28° RMS-S2S. Use that to see which row above applies to you.
-- LPW is the closest public match to our camera (head-mounted IR, 120 Hz, 640×480), but it has
-  no blink or pupil-size labels. Pupil-size accuracy is only checked on synthetic images (within 5%).
-- Final validation still needs the weekend test protocol on our own glasses.
+- Lund2013 comes from a lab-grade tower tracker with simulated degradation, not from a head-mounted
+  USB camera. To find out which noise level applies to a given build, look at `noise_rms_s2s_deg` in
+  any session's `metrics_summary.json`. RMS-S2S ≈ noise SD × 1.4, so 0.2° of noise shows up as about 0.28° RMS-S2S.
+- LPW closely matches the reference eye camera (head-mounted IR, 120 Hz, 640×480), but it has no
+  blink or pupil-size labels. Pupil-size accuracy is only verified on synthetic images (within 5%).
+- Validate each new build on real recordings; see [hardware.md](hardware.md#verifying-a-build).

@@ -3,7 +3,7 @@
 LPW: 66 head-mounted dark-pupil IR eye videos (22 people x 3), ~95 fps, 640x480,
 indoors/outdoors, glasses, make-up, sunlight - with a hand-labelled pupil center per frame.
 
-To match the OV9281 mode we record in (640x400), each frame is center-cropped
+To match the OV9281's 640x400 recording mode, each frame is center-cropped
 from 640x480 to 640x400 (same pixel scale, so pupil sizes in px stay realistic) and
 labels are shifted accordingly; frames whose label falls outside the crop are
 skipped. Standard LPW metric: detection rate = share of frames with center error
@@ -112,7 +112,7 @@ def load_conditions(root: str | Path) -> pd.DataFrame:
 
 
 def subsets(df: pd.DataFrame, root: str | Path) -> dict[str, pd.DataFrame]:
-    """all / no glasses / indoor without glasses (closest to a lab session with our glasses)."""
+    """all / no glasses / indoor without glasses (closest to a controlled lab recording)."""
     cond = load_conditions(root).set_index("video")
     g = df.video.map(cond.glasses).fillna(False).astype(bool)
     o = df.video.map(cond.outdoor).fillna(False).astype(bool)

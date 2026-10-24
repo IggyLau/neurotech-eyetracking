@@ -4,7 +4,7 @@ Lund2013: SMI HiSpeed 1250 tower tracker, 500 Hz (a few files are really 200 Hz)
 hand-labelled sample by sample by two experts (MN, RA):
     1 fixation, 2 saccade, 3 post-saccadic oscillation, 4 smooth pursuit, 5 blink, 6 undefined
 
-To simulate our OV9281 we resample the 500 Hz gaze to a lower rate (default 120 Hz)
+To simulate a 120 Hz eye camera such as the OV9281, we resample the 500 Hz gaze to a lower rate (default 120 Hz)
 and optionally add white noise, run the same metrics code the pipeline uses, and
 score the result against the expert labels. Expert-vs-expert agreement (MN vs RA)
 is reported as the ceiling no detector can be expected to beat.

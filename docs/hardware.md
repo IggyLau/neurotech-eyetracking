@@ -1,4 +1,6 @@
-# Hardware build: eye-tracking glasses v1
+# Hardware guide
+
+How to build a head-mounted eye tracker for this toolkit from two USB cameras and a glasses frame.
 
 ## Cameras
 
@@ -9,14 +11,10 @@
 | IR filter | **None** (sees 850 nm) | Module sold for eye tracking, built-in IR LEDs |
 | Role | Pupil, blinks, saccades, pupil size | What the wearer sees, gaze overlay |
 
-Vendor frame rates are upper bounds. Fill in what `eyetrack probe --index N` measures on the Mac:
+Vendor frame rates are upper bounds. The USB link, codec and operating system decide the real rate,
+so measure it with `eyetrack probe --index N` and put the best mode in your config.
 
-| Mode | Measured fps | Gaps in 3 s | Notes |
-|---|---|---|---|
-| 1280×800 | | | |
-| 640×400 | | | |
-
-## Parts to buy
+## Parts
 
 - 850 nm IR LEDs, 3 mm or 5 mm, low power (2–4). Use 850 nm rather than 940 nm because the OV9281 is
   far more sensitive at 850. Pick a part whose datasheet gives **radiant intensity (mW/sr)**.
@@ -51,8 +49,8 @@ USB 5V ──[ R ]──►|──►|── GND        two 850 nm LEDs in serie
 ### Avoiding red-eye (bright pupil)
 
 Red-eye happens when the light source is close to the camera's optical axis: light bounces off the
-retina straight back into the lens, which is the GC0308 problem noted in our Research Doc. The detector
-needs the **pupil to be the darkest blob**, so:
+retina straight back into the lens. Eye-tracking camera modules with LEDs right next to the lens,
+such as the GC0308, are prone to it. The detector needs the **pupil to be the darkest blob**, so:
 
 - Mount the LEDs **off-axis**: ≥ 10–15 mm from the lens center, angled toward the eye.
 - If the pupil still glows at some gaze angles, move the LEDs further out.
@@ -67,17 +65,17 @@ Build on a breadboard first. Check the image in `eyetrack live`, then solder.
   calibration and the eyeball model.
 - **Scene camera:** on the bridge or temple, facing forward. **Cover or desolder its IR LEDs.**
 - Run the cables along the temple arm and tie them down so a tug doesn't move the cameras.
-- If the OV9281 shows a large area of skin, set `pupil.roi: [x, y, w, h]` in `config/local.yaml`.
+- If the eye camera shows a large area of skin, restrict the search with `pupil.roi: [x, y, w, h]` in your config.
 
-## Results log
+## Verifying a build
 
-| Date | Test | fps | valid_rate | Result | Notes |
-|---|---|---|---|---|---|
-| | Detection (9 points) | | | | |
-| | Pupil: lights off/on | | | Δ diameter = | |
-| | Pupil: mental arithmetic | | | Δ diameter = | |
-| | Saccades (10°, 30×) | | | count = , amplitude = | |
-| | Blinks (10×) | | | detected = | |
-| | Calibration | | | validation error = ° | |
+Record each check as its own session with `eyetrack record`, then run `eyetrack process` on it.
 
-These numbers are the "what can our hardware actually measure" input for the problem statement.
+| Check | Procedure | Expected result |
+|---|---|---|
+| Detection | Look at 9 points spread across the field of view for 30 s | `valid_rate` > 0.95 in `metrics_summary.json` |
+| Signal noise | Any steady fixation | Low `noise_rms_s2s_deg`. Compare with the noise levels in [benchmarks.md](benchmarks.md). |
+| Pupil response | Steady light 10 s → press `1`, lights off 10 s → press `2`, lights on | Clear diameter increase after `lights_off` in `report.png` |
+| Saccades | Alternate between two targets ~10° apart (~10 cm apart at 57 cm), once per second for 30 s | ~30 saccades of consistent amplitude |
+| Blinks | Press `b` and blink, 10 times | `blink_count` = 10 |
+| Gaze accuracy | `eyetrack calibrate` | Validation error < 2° |

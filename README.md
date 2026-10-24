@@ -1,92 +1,172 @@
 # neurotech-eyetracking
 
-Recording and analysis toolkit for the Neurotech@USC DIY eye-tracking glasses:
-**OV9281** (mono, global shutter, no IR filter) as the eye camera and **GC0308** as the
-forward scene camera.
+Recording and analysis toolkit for low-cost, head-mounted eye trackers built from USB cameras.
 
-The approach is **record raw, process offline**. `record` saves synced eye and scene video
-with per-frame timestamps, and `process` computes all the metrics afterwards. Because the raw
-video is kept, you can tune the detector or try other methods without re-recording anyone.
+It records synchronized eye- and scene-camera video with per-frame timestamps, then computes
+pupil position and size, blinks, saccades, fixations, gaze on the scene, and area-of-interest
+metrics offline. The reference hardware is an **OV9281** global-shutter IR camera for the eye and a
+**GC0308** camera for the scene, but any UVC camera supported by OpenCV works.
 
-Pupil detection is adapted from [JEOresearch/EyeTracker](https://github.com/JEOresearch/EyeTracker)
-(MIT, see `NOTICE`).
+Raw video is always kept, so recordings can be re-processed with different settings later.
 
-## Setup (macOS)
+## Features
+
+- **Capture:** threaded recording from one or two USB cameras, with per-frame timestamps on a shared clock and keyboard event markers
+- **Pupil detection:** dark-pupil ellipse fitting with a per-frame confidence score
+- **Eye model:** eyeball sphere fit, giving eye-rotation angles in degrees without calibration
+- **Pupillometry:** blink removal, interpolation, smoothing and baseline correction
+- **Event detection:** velocity-threshold (I-VT) saccades and fixations, with noise-adaptive rejection of spurious saccades
+- **Blinks:** detected from pupil dropouts and told apart from glare and tracking loss
+- **Scene gaze:** ArUco-based screen calibration with validation error in degrees; gaze overlay video and heatmaps
+- **Areas of interest:** dwell time, time to first fixation, entries and revisits
+- **Benchmarks:** scripts that score the pipeline against public hand-labelled datasets
+
+## Installation
+
+Requires Python 3.10+.
 
 ```bash
+git clone https://github.com/IggyLau/neurotech-eyetracking.git
+cd neurotech-eyetracking
 python3 -m venv .venv
-.venv/bin/pip install -e ".[dev]"
-.venv/bin/pytest -q
+source .venv/bin/activate
+pip install -e ".[dev]"
+pytest
 ```
 
-The first time a camera is opened, macOS asks for camera access for your terminal app.
-If no cameras are found, allow it under **System Settings → Privacy & Security → Camera**.
+On macOS, the terminal app needs camera access:
+**System Settings → Privacy & Security → Camera**.
 
-## Workflow
+## Quick start
 
-| Step | Command | What it's for |
+```bash
+eyetrack probe                       # list connected cameras
+eyetrack probe --index 0             # measure real frame rates for each mode of camera 0
+eyetrack live                        # live pupil detection on the eye camera
+eyetrack calibrate                   # screen calibration; writes data/<session>/calibration.json
+eyetrack record --name task1         # record eye + scene video until q is pressed
+eyetrack process data/<session> --calibration data/<cal-session>/calibration.json --overlay
+```
+
+`eyetrack process` also accepts a single eye video file:
+
+```bash
+eyetrack process path/to/eye_video.mp4 --annotate
+```
+
+### Recording markers
+
+While recording, these keys write timestamped markers to `markers.csv`:
+
+| Key | Marker |
+|---|---|
+| `1` / `2` | `lights_off` / `lights_on` |
+| `3` / `4` | `task_start` / `task_end` |
+| `b` | `blink_cue` |
+| `m` | `marker` |
+| `q` | stop recording |
+
+## Configuration
+
+Defaults are in [`config/default.yaml`](config/default.yaml). To override them, create a YAML file
+containing only the keys you want to change and pass it before the subcommand:
+
+```yaml
+# config/local.yaml
+eye_camera:
+  index: 1
+  fps: 120
+scene_camera:
+  index: 0
+pupil:
+  roi: [100, 50, 440, 300]   # x, y, w, h: restrict the pupil search to the eye region
+```
+
+```bash
+eyetrack --config config/local.yaml record
+```
+
+## Outputs
+
+`eyetrack process` writes these files into the session folder:
+
+| File | Contents |
+|---|---|
+| `pupil.csv` | Per frame: pupil center, ellipse, diameter (raw and cleaned), confidence, validity, eye angles (`yaw_deg`, `pitch_deg`), event label |
+| `blinks.csv` | Onset, offset, duration and type (`blink`, `low_confidence`, `closed_or_lost`, `dropout`) |
+| `saccades.csv` | Onset, offset, duration, amplitude, peak velocity |
+| `fixations.csv` | Onset, offset, duration, position, dispersion |
+| `gaze.csv` | Gaze in scene-camera pixels (with `--calibration`) |
+| `aoi.csv` | Area-of-interest metrics (with `--calibration` and `--aois`) |
+| `metrics_summary.json` | Session summary: sample rate, detection rate, signal noise, blink rate, saccade and fixation statistics |
+| `report.png` | Pupil size, eye position with saccades, confidence and markers over time |
+| `heatmap.png`, `overlay.mp4` | Fixation heatmap and gaze overlay on the scene video (with `--calibration`; overlay needs `--overlay`) |
+| `eye_annotated.mp4` | Eye video with the detected pupil drawn on it (`--annotate`) |
+
+Areas of interest are rectangles in scene-camera pixels:
+
+```yaml
+# aois.yaml
+left_page:  [0, 0, 320, 480]
+right_page: [320, 0, 320, 480]
+```
+
+## Accuracy
+
+The pipeline has been scored against two public hand-labelled datasets. Methods and full results are in
+[docs/benchmarks.md](docs/benchmarks.md).
+
+| Measurement | Dataset | Result at 120 Hz |
 |---|---|---|
-| 1 | `eyetrack probe` then `eyetrack probe --index N` | Find camera indices and measure the **real** fps and dropped frames per mode |
-| 2 | `eyetrack live` | Live pupil overlay for aiming the camera and tuning the LEDs (aim for confidence > 0.8) |
-| 3 | `eyetrack calibrate` | Full-screen ArUco targets: 9 calibration + 5 validation points; saves `calibration.json` |
-| 4 | `eyetrack record --name lightsoff` | Record a test. Keys: `1` lights off, `2` lights on, `3`/`4` task start/end, `b` blink cue, `m` marker, `q` stop |
-| 5 | `eyetrack process data/<session> --calibration data/<cal>/calibration.json --overlay` | Compute all metrics |
+| Saccades | Lund2013, resampled to 120 Hz | F1 0.91 on clean signal, 0.85 with 0.2° noise (expert-vs-expert agreement: 0.97) |
+| Fixations | Lund2013 | F1 0.96 |
+| Blinks | Lund2013 | F1 0.96 |
+| Pupil center | LPW, cropped to 640×400 | 80–86% of frames within 5 px; median error 1.6 px |
 
-Put your own settings (camera indices, best fps mode, eye ROI) in `config/local.yaml`
-and pass `--config config/local.yaml` before the subcommand. Only the keys you change are needed.
+To reproduce these results, download the datasets as described in the docs, then run:
 
-`eyetrack process` also accepts a bare eye video, e.g. `eyetrack process data/samples/eye_test.mp4 --annotate`.
+```bash
+eyetrack benchmark lund
+eyetrack benchmark lpw
+```
 
-## What gets measured
+## Limitations
 
-| Measurement | Output | How | Limits with this hardware |
-|---|---|---|---|
-| Pupil center | `pupil.csv` (`cx, cy, confidence`) | Dark-pupil threshold + ellipse fit | Needs off-axis IR (no red-eye); eyelashes/glints lower confidence |
-| Pupil diameter | `pupil.csv` (`diameter_px`, `diameter_clean_px`) | Ellipse major axis, blink removal, interpolation, smoothing | Pixels, not mm; only compare within a recording, with the glasses unmoved and lighting constant |
-| Eye rotation | `pupil.csv` (`yaw_deg, pitch_deg`) | Eyeball sphere fitted from ellipse shapes (needs ~10 s of looking around) | Re-fit whenever the glasses shift |
-| Blinks | `blinks.csv` | 50–500 ms runs of lost/low-confidence pupil | Partial blinks may be missed |
-| Saccades | `saccades.csv` (amplitude, duration, peak velocity) | I-VT velocity threshold (30 °/s) | At ~120 Hz: reliable counts and amplitudes, underestimated peak velocity, no microsaccades |
-| Fixations | `fixations.csv` | Gaps between saccades ≥ 60 ms | |
-| Gaze on scene | `gaze.csv`, `overlay.mp4`, `heatmap.png` | 2nd-order polynomial from calibration | Parallax error when looking at distances other than the calibration distance |
-| AOIs: dwell, revisits | `aoi.csv` (`--aois aois.yaml`) | Fixations inside scene-pixel rectangles | Only meaningful with a still head (screen tasks) |
+- **Pupil diameter is in eye-camera pixels.** It can only be compared within a recording, with the headset unmoved and the lighting constant.
+- **Saccade detection needs a high frame rate.** About 120 Hz is needed for reliable saccade counts. Peak velocity is underestimated and microsaccades are not resolved at this rate.
+- **Gaze calibration is distance-specific.** It's a 2D mapping, so expect parallax error at viewing distances other than the calibration distance.
+- **Area-of-interest metrics need a still head.** They use fixed scene-pixel rectangles, so they only make sense in screen tasks or with a stable head position.
+- **Refit after any headset movement.** The eyeball model and calibration assume the eye camera doesn't move relative to the head.
 
-Each session also gets `metrics_summary.json` (detection rate, sample rate, blink rate,
-saccade/fixation stats) and `report.png` (pupil size, eye position with saccades, confidence and markers).
+## Hardware
 
-To cross-check event detection, run `pip install -e ".[compare]"` and feed `pupil.csv` to
-pymovements or REMoDNaV.
+See [docs/hardware.md](docs/hardware.md) for camera specs, IR illumination, eye safety and mounting.
 
-**Validated on labelled data:** see [docs/benchmarks.md](docs/benchmarks.md).
-- Saccades and fixations: Lund2013, resampled to 120 Hz. Saccade F1 is 0.91 with no noise and 0.85 with 0.2° noise (experts agree at 0.97).
-- Blinks: F1 0.96.
-- Pupil center: LPW, real IR eye video at 640×400. 80–86% of frames within 5 px, median error 1.6 px.
-
-Re-run with `eyetrack benchmark lund|lpw` after downloading the datasets.
-
-## Weekend test protocol
-
-Record each test as its own session and process it. Fill in the results table in `docs/hardware.md`.
-
-1. **Detection:** look at 9 points around the room for 30 s. Target: `valid_rate` > 0.95.
-2. **Pupil dilation:** steady light for 10 s, press `1` and turn the lights off, wait 10 s, press `2`
-   and turn them back on. Then do 30 s rest, `3`, 30 s of mental arithmetic (count back from 1000
-   in 7s), `4`. You should see the diameter jump at the light changes and a smaller rise during the task.
-3. **Saccades:** alternate between two dots ~10° apart (about 10 cm apart at 57 cm), once per second for
-   30 s. Target: about 30 saccades with consistent amplitude.
-4. **Blinks:** press `b` and blink, 10 times. Target: `blink_count` = 10.
-5. **Gaze accuracy:** `eyetrack calibrate`. Target: validation error < 2°.
-
-## Layout
+## Project layout
 
 ```
 src/eyetrack/
-  capture/      camera.py (threaded grab + timestamps), probe.py, recorder.py
-  pupil/        detector.py (adapted JEO), eye_model.py (eyeball fit -> degrees)
-  calibration/  targets.py (ArUco target display), mapping.py (pupil -> scene polynomial)
-  metrics/      blinks.py, pupil_size.py, events.py (I-VT), aoi.py
-  viz/          plots.py
-  pipeline.py   offline processing entry point
-  cli.py        `eyetrack` command
-tests/          synthetic eye images/traces with known ground truth
-docs/hardware.md  parts, LED wiring and eye safety, mounting, results log
+  capture/       camera access, frame-rate probe, recorder
+  pupil/         pupil detector and eyeball model
+  calibration/   calibration targets and pupil-to-scene mapping
+  metrics/       blinks, pupil size, saccades/fixations, areas of interest
+  benchmark/     scoring against labelled datasets
+  viz/           plots and overlay video
+  pipeline.py    offline processing
+  cli.py         `eyetrack` command-line interface
+config/          default settings
+docs/            hardware guide and benchmark results
+tests/           unit and integration tests on synthetic data
 ```
+
+## Acknowledgements
+
+Developed by the Neurotech@USC eye-tracking project. The pupil detector and eyeball-model approach are
+adapted from [JEOresearch/EyeTracker](https://github.com/JEOresearch/EyeTracker) (MIT); see [NOTICE](NOTICE).
+Benchmarks use [Lund2013](https://github.com/richardandersson/EyeMovementDetectorEvaluation)
+(Andersson et al., 2017) and [LPW](https://perceptualui.org/research/datasets/LPW/) (Tonsen et al., 2016).
+Neither dataset is redistributed here.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

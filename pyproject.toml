@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "eyetrack"
 version = "0.1.0"
-description = "Recording and analysis toolkit for the Neurotech@USC DIY eye-tracking glasses (OV9281 eye camera + GC0308 scene camera)"
+description = "Recording and analysis toolkit for head-mounted USB-camera eye trackers"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }

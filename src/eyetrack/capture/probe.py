@@ -1,7 +1,7 @@
 """Find cameras and measure what they really deliver on this machine.
 
-The OV9281 vendor spec (~120 fps @ 1280x800, ~210 fps @ 640x400) is only an
-upper bound: the USB link, codec and the OS camera stack (AVFoundation on macOS)
+The vendor spec (U20CAM-9281M: 120 fps MJPG at 1280x800, 1280x720, 800x600 and
+640x480) is only an upper bound: the USB link, codec and the OS camera stack (AVFoundation on macOS)
 decide the real numbers. Run this before trusting any timing-based metric.
 """
 
@@ -14,10 +14,11 @@ import numpy as np
 
 from .camera import open_capture, default_backend
 
-# Modes worth trying on the OV9281 and GC0308
+# Modes worth trying on the OV9281 and GC0308. 640x400 is not a native U20CAM-9281M mode;
+# AVFoundation delivers it by scaling (likely from the 16:10 1280x800 mode).
 CANDIDATE_MODES = [
-    (1280, 800, 120), (1280, 720, 120), (1280, 800, 60),
-    (640, 400, 210), (640, 400, 120), (640, 480, 120), (640, 480, 30),
+    (1280, 800, 120), (1280, 720, 120), (800, 600, 120),
+    (640, 400, 120), (640, 480, 120), (640, 480, 60), (640, 480, 30),
 ]
 
 

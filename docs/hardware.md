@@ -7,12 +7,38 @@ How to build a head-mounted eye tracker for this toolkit from two USB cameras an
 | | OV9281 (eye) | GC0308 (scene) |
 |---|---|---|
 | Sensor | 1 MP mono, **global shutter** | 0.3 MP colour, rolling shutter |
-| Vendor max | ~120 fps @ 1280×800, ~210 fps @ 640×400 | 30 fps @ 640×480 |
+| Vendor max | 120 fps MJPG @ 1280×800, 1280×720, 800×600, 640×480 ([U20CAM-9281M](https://github.com/INNO-MAKER/U20CAM-9281M)) | 30 fps @ 640×480 |
 | IR filter | **None** (sees 850 nm) | Module sold for eye tracking, built-in IR LEDs |
 | Role | Pupil, blinks, saccades, pupil size | What the wearer sees, gaze overlay |
 
 Vendor frame rates are upper bounds. The USB link, codec and operating system decide the real rate,
 so measure it with `eyetrack probe --index N` and put the best mode in your config.
+
+Measured on an InnoMaker U20CAM-9281M, MJPG, MacBook Air M3 (macOS 15), 3 s per mode:
+
+| Requested | Delivered | Measured fps | Jitter ms | Gaps |
+|---|---|---|---|---|
+| 1280×800 @ 120 | 1280×800 | 119.3 | 3.22 | 20 |
+| 1280×720 @ 120 | 1280×720 | 120.3 | 2.12 | 16 |
+| 1280×800 @ 60 | 1280×800 | 30.7 | 3.55 | 1 |
+| 640×400 @ 210 | 640×400 | 120.7 | 2.01 | 17 |
+| **640×400 @ 120** | 640×400 | **120.7** | **1.73** | 15 |
+| 640×480 @ 120 | 640×480 | 121.0 | 1.57 | 15 |
+| 640×480 @ 30 | 640×480 | 29.7 | 5.44 | 2 |
+
+- **120 fps is the maximum**, matching the vendor spec. A 210 fps request (from generic OV9281 specs)
+  still gets 120. 1280×800 has no 60 fps mode, so that request falls back to 30.
+- 640×400 is not a native mode. macOS most likely scales it from 1280×800, since both are 16:10, so it
+  should keep the full field of view.
+- The full 120 fps arrives, so the gaps are frames delivered late and then early, not dropped frames.
+  Timestamps of ±2 ms are fine for saccade metrics at 120 Hz.
+- **Use 640×400 @ 120**: it has the lowest jitter at full rate, and the pupil settings were tuned at this
+  pixel scale (LPW, see [benchmarks.md](benchmarks.md)).
+- On macOS, camera access must be granted to the app that launches `eyetrack`. Run it from Terminal.app
+  if another app's shell gets `not authorized to capture video`.
+- The stock U20CAM-9281M lens passes 850 nm IR: a TV remote shows as a bright flash in `eyetrack live`.
+  **Don't add an IR-cut filter**, which would block the LED light. An 850 nm pass filter, which blocks
+  visible light, is optional and can help against room light and screen reflections.
 
 ## Parts
 

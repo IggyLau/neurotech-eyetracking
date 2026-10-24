@@ -7,3 +7,6 @@ __pycache__/
 # Recorded sessions and downloaded sample videos stay local
 data/*
 !data/.gitkeep
+
+# Machine-specific camera indices and modes
+config/local.yaml

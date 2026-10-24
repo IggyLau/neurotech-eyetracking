@@ -3,7 +3,7 @@
 
 eye_camera:
   index: 0              # OV9281 (mono, global shutter, no IR filter)
-  width: 640            # 640x400 allows the highest frame rate on OV9281 modules
+  width: 640            # 640x400: full 1280x800 view at half scale, the pixel scale the pupil settings were tuned at
   height: 400
   fps: 120              # requested; probe reports what macOS actually delivers
   fourcc: MJPG          # high-fps modes usually need MJPG over USB 2

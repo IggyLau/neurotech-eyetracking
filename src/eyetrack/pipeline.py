@@ -44,6 +44,21 @@ def load_timestamps(ts_path: Path | None, n_frames: int, fps: float) -> tuple[np
 
 # ---------------------------------------------------------------- pupil
 
+def brightness_features(img: np.ndarray, r, eye_xy: tuple[int, int] | None) -> tuple[float, float, tuple | None]:
+    """(frame_brightness, eye_brightness, updated eye_xy) for one frame; shared with the real-time path.
+
+    Brightness is independent of the detector: a blink brightens the eye area (lid skin covers the dark
+    pupil and iris); a lighting problem changes the whole frame. eye_xy is the last confident pupil
+    centre, where the eye-area brightness is measured.
+    """
+    gray = img[:, :, 0] if img.ndim == 3 else img
+    if r.found and r.confidence >= 0.5:
+        eye_xy = (int(r.cx), int(r.cy))
+    ex, ey = eye_xy or (gray.shape[1] // 2, gray.shape[0] // 2)
+    return (float(gray[::4, ::4].mean()),
+            float(gray[max(0, ey - 50):ey + 50, max(0, ex - 80):ex + 80].mean()), eye_xy)
+
+
 def detect_video(video: Path, params: DetectorParams, annotate_to: Path | None = None,
                  max_frames: int | None = None, progress: bool = True) -> tuple[pd.DataFrame, list, float]:
     cap = cv2.VideoCapture(str(video))
@@ -54,14 +69,17 @@ def detect_video(video: Path, params: DetectorParams, annotate_to: Path | None =
     writer = None
     rows, ellipses = [], []
     i = 0
+    eye_xy = None   # last confident pupil centre: where the eye-area brightness is measured
     while True:
         ok, img = cap.read()
         if not ok or (max_frames and i >= max_frames):
             break
         r = detect_pupil(img, params)
+        frame_b, eye_b, eye_xy = brightness_features(img, r, eye_xy)
         rows.append({"frame_index": i, "found": r.found, "cx": r.cx, "cy": r.cy,
                      "axis_minor": r.axis_minor, "axis_major": r.axis_major, "angle": r.angle,
-                     "diameter_px": r.diameter_px, "confidence": r.confidence})
+                     "diameter_px": r.diameter_px, "confidence": r.confidence,
+                     "frame_brightness": frame_b, "eye_brightness": eye_b})
         ellipses.append(r.ellipse)
         if annotate_to is not None:
             vis = draw_result(img, r)
@@ -139,11 +157,25 @@ def process(path: str | Path, cfg: dict, calibration: str | Path | None = None,
 
     # blinks
     bcfg = cfg["blinks"]
-    blinks = blinks_mod.detect_blinks(t, pupil.valid.to_numpy(), bcfg["min_duration_ms"], bcfg["max_duration_ms"],
-                                      bcfg.get("merge_gap_ms", 0), pupil.confidence.to_numpy(),
-                                      bcfg.get("max_blink_confidence", 1.0))
+    if bcfg.get("method", "brightness") == "brightness" and "eye_brightness" in pupil:
+        # blink vs dropout from image brightness (independent of the pupil detector)
+        blinks = blinks_mod.classify_dropouts(
+            t, pupil.valid.to_numpy(), pupil.frame_brightness.to_numpy(), pupil.eye_brightness.to_numpy(),
+            bcfg["min_duration_ms"], bcfg["max_duration_ms"], bcfg.get("merge_gap_ms", 0),
+            bcfg.get("lighting_drop", 0.08), bcfg.get("eyelid_rise", 3.0))
+    else:
+        blinks = blinks_mod.detect_blinks(t, pupil.valid.to_numpy(), bcfg["min_duration_ms"], bcfg["max_duration_ms"],
+                                          bcfg.get("merge_gap_ms", 0), pupil.confidence.to_numpy(),
+                                          bcfg.get("max_blink_confidence", 1.0))
     in_blink = blinks_mod.blink_mask(t, blinks, bcfg["pad_ms"])
     pupil["in_blink"] = in_blink
+    # per frame: why there is no trusted pupil (blank when there is one)
+    kind = np.full(len(t), "", dtype=object)
+    for ev in blinks.itertuples():
+        if ev.kind != "camera_gap":
+            kind[ev.start_index:ev.end_index] = ev.kind
+    kind[pupil.valid.to_numpy()] = ""
+    pupil["dropout_kind"] = kind
     good = pupil.valid.to_numpy() & ~in_blink
 
     # pupil size
@@ -166,7 +198,14 @@ def process(path: str | Path, cfg: dict, calibration: str | Path | None = None,
     else:
         ex, ey, unit = pupil.cx, pupil.cy, "px"
         ev_kwargs.update(threshold=cfg["events"]["velocity_threshold_px"], min_amplitude=0)
-    saccades, fixations, labels = events_mod.detect_events(t, ex.to_numpy(), ey.to_numpy(), good, **ev_kwargs)
+    if cfg["events"].get("method", "ivt") == "step":
+        st_kwargs = events_mod.step_kwargs(cfg["events"])
+        if unit == "px":
+            st_kwargs["min_amplitude"] = cfg["events"].get("step", {}).get("min_amplitude_px", 2.0)
+        saccades, fixations, labels = events_mod.detect_steps(t, ex.to_numpy(), ey.to_numpy(), pupil.valid.to_numpy(),
+                                                              exclude=in_blink, **st_kwargs)
+    else:
+        saccades, fixations, labels = events_mod.detect_events(t, ex.to_numpy(), ey.to_numpy(), good, **ev_kwargs)
     pupil["event"] = labels
 
     markers = load_markers(inp, t0_ns)
@@ -175,7 +214,7 @@ def process(path: str | Path, cfg: dict, calibration: str | Path | None = None,
     pcfg = cfg["pupil_size"]
     epochs, epoch_summary = pupil_size.marker_epochs(
         t, pupil.diameter_clean_px.to_numpy(), markers, pcfg.get("epoch_labels", []),
-        pcfg["baseline_ms"], pcfg.get("epoch_max_s", 30))
+        pcfg["baseline_ms"], pcfg.get("epoch_max_s", 30), tuple(pcfg.get("epoch_end_ignore", [])))
 
     # gaze in scene coordinates
     gaze = None
@@ -201,6 +240,11 @@ def process(path: str | Path, cfg: dict, calibration: str | Path | None = None,
         "mean_confidence": float(pupil.confidence.mean()) if len(pupil) else 0.0,
         "blink_count": int((blinks.kind == "blink").sum()) if len(blinks) else 0,
         "blink_rate_per_min": float((blinks.kind == "blink").sum() / duration * 60) if duration and len(blinks) else 0.0,
+        # why frames lacked a trusted pupil, as a fraction of all frames (signal-quality diagnosis)
+        "missing_frames": {k: float((pupil.dropout_kind == k).mean()) for k in ("blink", "closed", "lighting", "lost",
+                                                                              "dropout", "low_confidence", "closed_or_lost")
+                           if (pupil.dropout_kind == k).any()},
+        "camera_gaps": int((blinks.kind == "camera_gap").sum()) if len(blinks) else 0,
         "eye_model": eye_model.to_dict() if eye_model else None,
         **pupil_size.summary(pupil.diameter_clean_px.to_numpy()),
         **events_mod.summary(saccades, fixations, duration, unit),

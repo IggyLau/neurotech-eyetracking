@@ -114,3 +114,71 @@ def test_marker_epochs_end_at_next_marker_and_measure_change():
     assert task.baseline_px == pytest.approx(34)
     assert task.max_change_pct == pytest.approx(100 * 10 / 34, abs=0.1)
     assert set(samples.event) == {0, 1, 2}
+
+
+def test_step_detector_finds_steps_across_dropouts():
+    from eyetrack.metrics.events import detect_steps
+    t, x, y, onsets = step_trace(fs=120, n_steps=10, step_deg=5)
+    rng = np.random.default_rng(3)
+    x = x + rng.normal(0, 0.2, len(x))
+    valid = np.ones(len(t), bool)
+    valid[(np.arange(len(t)) % 10) >= 6] = False       # 4 of every 10 frames missing, like screen flicker
+    sacc, fix, _ = detect_steps(t, x, y, valid)
+    assert len(sacc) == len(onsets)
+    assert np.allclose(np.sort(sacc.onset_s.to_numpy()), onsets, atol=0.05)
+    assert sacc.amplitude.median() == pytest.approx(5, abs=0.5)
+    assert len(fix) >= len(onsets)
+
+
+def test_dropouts_classified_by_brightness():
+    from eyetrack.metrics.blinks import blink_mask, classify_dropouts
+    fs = 120
+    t = np.arange(fs * 6) / fs
+    valid = np.ones(len(t), bool)
+    frame_b = np.full(len(t), 150.0)
+    eye_b = np.full(len(t), 120.0)
+    blink = (t >= 1.0) & (t < 1.2)                          # eyelid: eye area brighter
+    valid[blink] = False
+    eye_b[blink] = 135
+    for k in range(30):                                    # flicker: 4 dark frames every 10, for 2.5 s
+        a = int((3.0 + k * 10 / fs) * fs)
+        valid[a:a + 4] = False
+        frame_b[a:a + 4] = 100
+    ev = classify_dropouts(t, valid, frame_b, eye_b, merge_gap_ms=80)
+    assert (ev.kind == "blink").sum() == 1
+    assert (ev.kind == "lighting").sum() == 30              # never merged into one long "closed" event
+    assert "closed" not in set(ev.kind)
+    masked = blink_mask(t, ev)
+    assert masked[blink].all() and not masked[(t > 3) & valid].any()
+
+
+def test_gap_fill_recovers_saccades_next_to_lost_frames():
+    t, x, y, onsets = step_trace(fs=120, n_steps=10, step_deg=10)
+    valid = np.ones(len(t), bool)
+    for t0 in onsets:  # lose 2 frames just before each saccade, as screen flicker does
+        i = int(np.searchsorted(t, t0))
+        valid[i - 2:i] = False
+    kw = dict(threshold=30, amplitude_noise_factor=3, min_fixation_ms=60)
+    plain, _, _ = detect_events(t, x, y, valid, **kw)
+    filled, _, _ = detect_events(t, x, y, valid, fill_gap_ms=35, **kw)
+    assert len(plain) < len(onsets)          # the amplitude check needs a valid sample before the saccade
+    assert len(filled) == len(onsets)
+    assert filled.amplitude.to_numpy() == pytest.approx(10, abs=0.5)
+    # filled samples don't count as measurements: same noise estimate as without filling
+    assert filled.attrs["noise_rms_s2s"] == pytest.approx(plain.attrs["noise_rms_s2s"], rel=0.05)
+
+
+def test_long_gaps_are_not_filled():
+    t, x, y, _ = step_trace(fs=120, n_steps=4)
+    valid = np.ones(len(t), bool)
+    valid[200:230] = False                    # 250 ms: a blink, not a lost frame
+    _, _, labels = detect_events(t, x, y, valid, threshold=30, fill_gap_ms=35)
+    assert (labels[200:230] == "none").all()
+
+
+def test_duration_bias_correction_subtracts_one_sample():
+    t, x, y, _ = step_trace(fs=120, n_steps=6, sacc_ms=40)
+    a, _, _ = detect_events(t, x, y, threshold=30)
+    b, _, _ = detect_events(t, x, y, threshold=30, duration_bias_samples=1)
+    assert len(a) == len(b)
+    assert (a.duration_ms - b.duration_ms).to_numpy() == pytest.approx(1000 / 120, abs=0.01)

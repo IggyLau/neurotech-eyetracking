@@ -57,12 +57,31 @@ class DetectorParams:
     refine: str = "angle"         # contour clean-up before the final fit: "angle" (JEO), "hull", "none"
     n_seeds: int = 1              # dark candidate regions to try (1 = JEO: darkest only)
     score: str = "jeo"            # candidate ranking: "jeo" (favours big blobs) or "shape" (ellipse fit x contrast)
+    bright_margin: int = 60       # refine "visible": contour points next to pixels this much brighter than the pupil are dropped
+    method: str = "threshold"     # "threshold" (JEO-based, this file), "edge" (edge_detector.py) or
+                                  # "pupil_labs" (pupil_labs.py, needs the pupil-detectors package)
+    pl_pupil_size_min: int = 10   # pupil_labs only: pupil diameter range, px
+    pl_pupil_size_max: int = 150
+    # edge method only
+    edge_radii: tuple[int, ...] = (8, 12, 17, 24, 34, 48)
+    edge_roi_scale: float = 3.0
+    edge_roi_min: int = 60
+    edge_intensity_range: int = 20
+    edge_bright_margin: int = 40
+    edge_canny_low: int = 30
+    edge_canny_high: int = 70
+    edge_inlier_px: float = 1.5
+    edge_iterations: int = 150
 
     @classmethod
     def from_config(cls, pcfg: dict) -> "DetectorParams":
         keys = ["search_box", "min_area", "max_aspect", "glint_kernel", "median_blur",
-                "close_kernel", "close_iterations", "refine", "n_seeds", "score", "block"]
+                "close_kernel", "close_iterations", "refine", "n_seeds", "score", "block", "bright_margin",
+                "method", "edge_roi_scale", "edge_roi_min", "edge_intensity_range", "edge_bright_margin", "edge_canny_low",
+                "edge_canny_high", "edge_inlier_px", "edge_iterations", "pl_pupil_size_min", "pl_pupil_size_max"]
         kw = {k: pcfg[k] for k in keys if k in pcfg}
+        if "edge_radii" in pcfg:
+            kw["edge_radii"] = tuple(pcfg["edge_radii"])
         return cls(threshold_offsets=tuple(pcfg.get("threshold_offsets", (5, 15, 25))),
                    roi=tuple(pcfg["roi"]) if pcfg.get("roi") else None, **kw)
 
@@ -183,8 +202,28 @@ def optimize_contours_by_angle(contour: np.ndarray) -> np.ndarray:
     return pts[keep].astype(np.int32).reshape(-1, 1, 2)
 
 
+def visible_contour(contour: np.ndarray, gray: np.ndarray, pupil_value: int, bright_margin: int) -> np.ndarray:
+    """Contour points that border the iris, not a reflection.
+
+    Where a bright reflection covers part of the pupil, the dark blob's outline follows the reflection
+    instead of the pupil edge. Those points sit next to pixels far brighter than the pupil, so drop them
+    and fit the ellipse to the rest of the outline.
+    """
+    bright = (gray >= pupil_value + bright_margin).astype(np.uint8)
+    near = cv2.dilate(bright, np.ones((5, 5), np.uint8))
+    pts = contour.reshape(-1, 2)
+    keep = near[pts[:, 1], pts[:, 0]] == 0
+    return contour[keep] if keep.sum() >= max(6, 0.4 * len(pts)) else contour
+
+
 def detect_pupil(image: np.ndarray, params: DetectorParams | None = None) -> PupilResult:
     params = params or DetectorParams()
+    if params.method == "edge":
+        from .edge_detector import detect_pupil_edges
+        return detect_pupil_edges(image, params)
+    if params.method == "pupil_labs":
+        from .pupil_labs import detect_pupil_pl
+        return detect_pupil_pl(image, params)
     gray_full = to_gray(image)
     ox, oy = 0, 0
     gray = gray_full
@@ -204,7 +243,7 @@ def detect_pupil(image: np.ndarray, params: DetectorParams | None = None) -> Pup
     darkest = seeds[0]
     blurred = cv2.blur(gray, (5, 5))
 
-    best_score, best_contour, best_ratio = 0.0, None, 0.0
+    best_score, best_contour, best_ratio, best_value = 0.0, None, 0.0, 0
     for seed in seeds:
         seed_value = int(blurred[seed[1], seed[0]])
         for offset in sorted(params.threshold_offsets, reverse=True):  # relaxed -> strict, as in JEO
@@ -224,7 +263,7 @@ def detect_pupil(image: np.ndarray, params: DetectorParams | None = None) -> Pup
             else:  # "shape": elliptical, solid and darker than its surroundings - size-independent
                 score = filled * ratio * max(ellipse_contrast(gray, contour), 0.0)
             if score > best_score:
-                best_score, best_contour, best_ratio = score, contour, ratio
+                best_score, best_contour, best_ratio, best_value = score, contour, ratio, seed_value
 
     result = PupilResult(found=False, darkest=(darkest[0] + ox, darkest[1] + oy))
     if best_contour is None:
@@ -233,6 +272,8 @@ def detect_pupil(image: np.ndarray, params: DetectorParams | None = None) -> Pup
         refined = optimize_contours_by_angle(best_contour)
     elif params.refine == "hull":  # convex hull bridges bites taken out by reflections / eyelids
         refined = cv2.convexHull(best_contour)
+    elif params.refine == "visible":  # fit only the outline that borders the iris
+        refined = optimize_contours_by_angle(visible_contour(best_contour, gray, best_value, params.bright_margin))
     else:
         refined = best_contour
     if len(refined) < 5:
@@ -245,6 +286,11 @@ def detect_pupil(image: np.ndarray, params: DetectorParams | None = None) -> Pup
     result.axis_minor, result.axis_major = (w, h) if w <= h else (h, w)
     result.angle = angle
     result.confidence = best_ratio
+    if params.refine == "visible":  # share of the visible outline on the final ellipse
+        band = np.zeros(gray.shape, np.uint8)
+        cv2.ellipse(band, ((cx, cy), (w, h), angle), 255, 4)
+        pts = refined.reshape(-1, 2)
+        result.confidence = float(np.mean(band[pts[:, 1], pts[:, 0]] > 0))
     result.ellipse = ((cx + ox, cy + oy), (w, h), angle)
     return result
 

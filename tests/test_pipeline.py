@@ -56,3 +56,19 @@ def test_process_session_end_to_end(tmp_path):
     assert (session / "pupil_epochs.csv").exists() and (session / "pupil_epochs.png").exists()
     (ep,) = summary["pupil_epochs"]
     assert ep["label"] == "task_start" and abs(ep["mean_change_pct"]) < 5
+
+
+def test_check_grades_a_processed_session(tmp_path):
+    from eyetrack.validation import check, format_report
+    session = _write_session(tmp_path)
+    process(session, load_config())
+    test, checks = check(session, "t4_saccades", expected_saccades=11)
+    by_name = {c.name.split(" (")[0]: c for c in checks}
+    assert test == "t4_saccades"
+    assert by_name["valid rate"].verdict == "pass"
+    assert by_name["sample rate"].verdict == "pass"
+    assert by_name["target saccades found"].verdict in ("pass", "usable")   # 11 switches, some during blinks
+    report = format_report(session, test, checks)
+    assert "pass" in report.lower()
+    test, checks = check(session, "t1_fixation")
+    assert any(c.name.startswith("pupil size variation") for c in checks)

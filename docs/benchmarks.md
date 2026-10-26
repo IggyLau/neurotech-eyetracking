@@ -41,6 +41,56 @@ fires on noise. Noise bursts are fast but **tiny**, so rejecting candidates smal
 threshold (Nyström & Holmqvist 2010) was also tried: at 120 Hz it missed most small saccades
 (recall 0.38), so it is an option but not the default.
 
+### Step (edge-filter) detector vs I-VT at 120 Hz
+
+`events.method: step` finds saccades as steps: the median position over the next 60 ms minus the median
+over the previous 60 ms, peaks above 8× the noise of a window median and at least 1°. Because it compares
+windows rather than consecutive samples, it tolerates short dropouts (for example screen flicker) that
+break I-VT's velocity. On continuous Lund data it is about as good as I-VT, and better when noisy:
+
+| Noise added | I-VT P / R / F1 | Step P / R / F1 |
+|---|---|---|
+| 0.2° | 0.86 / 0.86 / **0.86** | 0.82 / 0.87 / 0.84 |
+| 0.5° | 0.84 / 0.70 / 0.76 | 0.80 / 0.83 / **0.81** |
+
+Looser settings (4× noise, 0.5° minimum) found more saccades (recall 0.95) but mistook smooth pursuit in the
+video and moving-dot files for steps (precision 0.48–0.64). Saccades less than ~120 ms apart merge into one.
+I-VT stays the default. Short dropouts are now handled by `fill_gap_ms` (next section); `step` remains an option for very noisy recordings (around 0.5° and above).
+
+### At the noise expected from an improved build (I-VT gap filling and duration correction)
+
+With an IR-pass filter and a corrected eye model, the cleanest stretches of a real session (dark screen, no
+corneal reflection) imply about 0.11–0.17° of per-sample noise once bad frames are removed. Lund2013 at 120 Hz,
+image viewing (closest to reading and still screens; I-VT was tuned on these files) and video + dots (held out):
+
+| Noise, lost frames | Method | F1 image / video+dots | Onset error | Amplitude error | Duration true → measured (image) |
+|---|---|---|---|---|---|
+| 0.15°, none | I-VT | 0.92 / 0.81 | 2.7 ms | 0.29° | 30 → 42 ms |
+| 0.15°, none | I-VT + gap fill + duration fix | 0.92 / 0.81 | 2.7 ms | 0.29° | 30 → 33 ms |
+| 0.15°, none | Step | 0.88 / 0.75 | 3.0 ms | 0.34° | 32 → 33 ms (video+dots 24 → 50) |
+| 0.15°, 5% | I-VT | 0.85 / 0.76 | 2.7 ms | 0.29° | 30 → 42 ms |
+| 0.15°, 5% | **I-VT + gap fill + duration fix** | **0.92 / 0.81** | 3.0 ms | 0.29° | 30 → 33 ms |
+| 0.15°, 5% | Step | 0.88 / 0.75 | 3.3 ms | 0.37° | 32 → 33 ms (video+dots 24 → 50) |
+
+Lost frames are simulated as random runs of 1–4 frames. Onset and amplitude errors are medians over matched
+saccades (image viewing).
+
+- `fill_gap_ms: 35` interpolates runs of up to 4 missing frames before the velocity is computed. It has no
+  effect without losses and restores the no-loss F1 with them. Filled samples are excluded from the noise estimate.
+- `duration_bias_samples: 1` removes one sample from each duration. The median duration error goes from +6 / +9 /
+  +12 ms to −2 / +1 / +4 ms at 0.1 / 0.15 / 0.2° (image viewing). The typical per-saccade error stays about 8–10 ms,
+  one frame, which is the limit of 120 Hz. Starts are already unbiased; the excess was at the end of the saccade.
+- Interpolating the threshold crossing between frames was also tried; it made onsets about 6 ms early.
+- End to end with the shipped config (all files, no simulated frame loss), over 5 fresh random noise draws
+  (mean ± SD; both settings scored on the same draws), median saccade duration true → before → now:
+  26 → 35 → **27 ms** at 0°, 28 → 42.5 ± 1.9 → **34 ± 1.9 ms** at 0.2°, 31 → 92 → 83 ms at 0.5°. F1 is unchanged
+  (0.91 / 0.86 ± 0.01 / 0.76 ± 0.02), onset error 2.7 / 3.7 / 19 ms. The improvement held on every draw.
+  Moving dots are over-corrected at 0° (22 → 17 ms).
+- `benchmark.lund.run` draws new noise on every run, so results describe the detector's handling of noise in
+  general rather than one draw. Use `repeats` to see the spread, and the same `seed` to compare two settings.
+- Above about 0.3° noise none of this helps. At 0.5° the step detector finds more saccades (F1 0.86 vs 0.81 on
+  image viewing), but both overestimate durations by 30–50 ms.
+
 ### Effect of frame rate (tuned defaults, all files)
 
 | Rate | Noise | Saccade P / R / F1 | Amplitude error | Onset error | Saccade duration (true → measured) | Fixation F1 (image viewing) |
@@ -92,6 +142,38 @@ mode mainly helps footage with heavy eye make-up or glasses frames in view. It i
 Chosen on participants 1–11 and confirmed on 12–21, excluding participant 22 (heavy make-up). The size filter drops
 frames whose diameter jumps more than 1.5× against the 2 s rolling median. These are almost always the iris or a
 shadow picked by mistake.
+
+### Pupils partly covered by a reflection
+
+A lit screen reflects on the cornea as a grey patch about as bright as the iris. When it overlaps the pupil, the
+dark blob's outline runs along the reflection, so the default confidence (share of the outline on the fitted
+ellipse) drops to about 0.65 even when the ellipse itself is right. Two alternatives were tested:
+
+- `refine: visible`: drop outline points next to pixels much brighter than the pupil, then fit and score the rest.
+- `method: edge`: the published Pupil Labs approach (Świrski et al. 2012; Kassner et al. 2014), written for this
+  repository: coarse dark-centre search, Canny edges on the pupil side, RANSAC ellipse fit, confidence = edge
+  support on the visible perimeter. Not tuned.
+
+LPW held-out (participants 12–21), every 10th frame:
+
+| Detector | Detection rate (≤5 px) | Kept at conf ≥ 0.8 | Wrong among kept (>10 px) |
+|---|---|---|---|
+| Default (threshold, `refine: angle`) | 79.7% | 69.3% | 1.8% |
+| `refine: visible` | **79.9%** | **83.7%** | 2.7% |
+| `method: edge` | 53.2% | 42.2% | 5.0% |
+
+On a 640×400 validate session (OV9281, no IR-pass filter), the share of frames with confidence ≥ 0.8 rose from
+0% to 82% (baseline on a grey screen), 11% to 96% (white screen) and 4% to 63% (reading) with `refine: visible`,
+with the same frame-to-frame jitter (median 0.70 vs 0.74 px at fixation). The edge method jittered more (median
+1.0 px at fixation) and lost the pupil on 37% of reading frames. Confidence values differ between settings, so re-choose
+`min_confidence` when switching `refine`.
+
+Pupil Labs' own 2D detector (`pupil-detectors` 2.0.2, built against OpenCV 4.14, `method: pupil_labs`) was also
+run on consecutive frames of 640×480 LPW held-out videos (every 3rd video, first 400 frames, every 10th frame scored),
+with only the pupil size range raised to 150 px: **26.8%** within 5 px (median error 173 px) vs **75.2%** for the
+default detector on the same frames. In its debug view it usually found the pupil region and edge, then rejected the
+pupil and fitted a small ellipse elsewhere (often next to the glint). Pupil Capture users normally set a region of
+interest and tune intensity and size per camera, which was not done here.
 
 ### Blinks vs glare
 

@@ -9,6 +9,7 @@ eye_camera:
   fourcc: MJPG          # high-fps modes usually need MJPG over USB 2
   exposure: null        # null = leave camera default; AVFoundation often ignores this
   flip: false           # set true if the camera is mounted upside down
+  mirror_preview: true  # show the eye mirrored, like Photo Booth; recordings and results are unchanged
 
 scene_camera:
   index: 1              # GC0308 (cover/disable its IR LEDs when used as scene cam)
@@ -24,6 +25,17 @@ recording:
   eye_codec: MJPG       # near-lossless and cheap to encode at high fps
   scene_codec: MJPG
 
+realtime:
+  # Process every eye frame live (detection + causal validity / blink / saccade flags) on a worker
+  # decoupled from the preview, and save live_pupil.csv, live_blinks.csv, live_summary.json in the
+  # session. `eyetrack process` still recomputes everything offline from eye.avi. See docs/realtime.md.
+  enabled: true
+  backend: thread       # thread | process (both keep up at 120 fps on an M3; thread has lower latency)
+  queue_frames: 240     # 2 s of frames; when full, frames are skipped by the live path only (and counted)
+  late_ms: 25           # results later than this after capture are counted as late
+  flush_rows: 60        # flush live_pupil.csv every ~0.5 s so a crash loses little
+  eye_model: null       # session folder / metrics_summary.json from `eyetrack process`: live yaw/pitch in deg
+
 pupil:
   roi: null             # [x, y, w, h] in eye-camera pixels to ignore eyelashes/frame; null = full image
   threshold_offsets: [5, 15, 25]   # strict / medium / relaxed, added to darkest pixel value
@@ -38,13 +50,20 @@ pupil:
   block: 20
   glint_kernel: 0       # grey opening to erase glints (did not help on LPW)
   median_blur: 0
-  refine: angle         # angle | hull | none
+  refine: angle         # angle | hull | none | visible (fit and score only the outline next to the iris,
+                        # not the part along a reflection; same accuracy, more frames above a given confidence)
+  method: threshold     # threshold (JEO-based) | edge (Pupil Labs-style edge + RANSAC fit; less robust on LPW)
   # LPW held-out: conf>=0.5 + size filter keeps 88% of frames with 3.1% wrong (>10 px);
   # the old 0.6 kept 85% at the same error and dropped twice as many correct frames
   min_confidence: 0.5   # frames below this are treated as missing (blink / bad detection)
   max_size_ratio: 1.5   # drop frames whose diameter jumps >1.5x vs the 2 s rolling median (iris picked)
 
 blinks:
+  # brightness: blink vs dropout from image brightness (eye area brighter = eyelid; whole frame darker =
+  # lighting / screen flicker), independent of the pupil detector. confidence: the older rule below.
+  method: brightness
+  lighting_drop: 0.08   # whole frame >= 8% darker than just before -> lighting dropout, not a blink
+  eyelid_rise: 3.0      # eye area >= 3 grey levels brighter than just before -> eyelid (blink / closed)
   # tuned on Lund2013 at 120 Hz: merging valid flickers < 80 ms raised blink F1 0.86 -> 0.96
   min_duration_ms: 30
   max_duration_ms: 500
@@ -55,6 +74,16 @@ blinks:
   pad_ms: 25           # samples around a blink that are also dropped (eyelid partly closed)
 
 events:
+  # ivt: velocity threshold (below). step: an edge filter of medians that finds saccades as steps between
+  # fixations; it rides over short dropouts (e.g. screen flicker), which I-VT can't. Lund2013 at 120 Hz:
+  # F1 0.84 / 0.81 at 0.2 / 0.5 deg noise (I-VT 0.86 / 0.76); see docs/benchmarks.md
+  method: ivt
+  step:
+    half_window_ms: 60            # median window on each side; saccades closer than ~2x this merge
+    noise_factor: 8               # a step must exceed 8 x the noise of a window median
+    min_amplitude: 1.0            # deg
+    min_amplitude_px: 2.0         # used when there is no eye model
+    min_separation_ms: 120
   # I-VT tuned on Lund2013 resampled to 120 Hz (`eyetrack benchmark lund`): a fixed 30 deg/s
   # threshold plus rejecting candidates smaller than 3x the measured noise (RMS-S2S) beat
   # the Nyström-Holmqvist adaptive threshold, which missed small saccades at 120 Hz.
@@ -68,6 +97,11 @@ events:
   min_fixation_ms: 60
   smoothing_ms: 20                # Savitzky-Golay window; no effect below 5 samples (i.e. at 120 Hz)
   merge_gap_ms: 0                 # join saccades split by post-saccadic wobble (did not help on Lund)
+  # Lund2013 at 120 Hz, 0.15 deg noise (see docs/benchmarks.md): filling gaps of up to 4 frames restores
+  # F1 with 5% lost frames (0.85 -> 0.92, image viewing); the 1-sample correction moves the median
+  # duration error from +9 ms to +1 ms. Both are I-VT only.
+  fill_gap_ms: 35                 # interpolate runs of missing samples up to this long (4 frames at 120 Hz)
+  duration_bias_samples: 1        # subtract 1 sample interval from saccade durations
 
 pupil_size:
   smoothing_ms: 50
@@ -75,6 +109,7 @@ pupil_size:
   # markers that start a baseline-corrected epoch (pupil_epochs.csv); each epoch runs to the next marker
   epoch_labels: [lights_off, lights_on, task_start, task_end, marker]
   epoch_max_s: 30
+  epoch_end_ignore: [solved]      # markers that don't end an epoch (SPACE when an arithmetic problem is solved)
 
 calibration:
   aruco_dict: DICT_4X4_50

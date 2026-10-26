@@ -96,6 +96,8 @@ Build on a breadboard first. Check the image in `eyetrack live`, then solder.
 ## Verifying a build
 
 Record each check as its own session with `eyetrack record`, then run `eyetrack process` on it.
+The full step-by-step version, with pass/fail targets graded by `eyetrack check`, is
+[validation_protocol.md](validation_protocol.md).
 
 | Check | Procedure | Expected result |
 |---|---|---|

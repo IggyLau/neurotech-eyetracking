@@ -45,7 +45,11 @@ eyetrack probe --index 0             # measure real frame rates for each mode of
 eyetrack live                        # live pupil detection and a 10 s pupil-size trace
 eyetrack calibrate                   # screen calibration; writes data/<session>/calibration.json
 eyetrack record --name task1         # record eye + scene video until q is pressed
+eyetrack realtime-bench data/<session>   # replay a recording through the live 120 fps path: fps, drops, latency
 eyetrack process data/<session> --calibration data/<cal-session>/calibration.json --overlay
+eyetrack check data/<session>          # grade a recording against docs/validation_protocol.md
+eyetrack validate                    # guided: aim the camera, run the on-screen protocol, get a report
+eyetrack answer-test                 # check SPACE timing, microphone and spoken-number transcription
 ```
 
 `eyetrack process` also accepts a single eye video file:
@@ -65,6 +69,14 @@ While recording, these keys write timestamped markers to `markers.csv`:
 | `b` | `blink_cue` |
 | `m` | `marker` |
 | `q` | stop recording |
+
+### Real-time processing
+
+`eyetrack record` and `eyetrack live` process every eye frame at the camera rate (120 fps) on a worker
+separate from the preview window. `record` saves the live results (`live_pupil.csv`, `live_blinks.csv`,
+`live_summary.json`) next to the raw video, and `eyetrack process` can still re-analyse the session
+offline. On an M3, latency from capture to result is about 2.5 ms (p50) and 4 ms (p95), with no frames
+dropped. Details, latencies of each live metric and benchmarks: [docs/realtime.md](docs/realtime.md).
 
 ## Configuration
 

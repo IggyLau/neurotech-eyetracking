@@ -22,6 +22,8 @@ dependencies = [
 dev = ["pytest>=7"]
 # Alternative event detectors to cross-check our own I-VT implementation
 compare = ["pymovements", "remodnav"]
+# Spoken answers in `eyetrack validate` / `eyetrack answer-test`: microphone + offline transcription
+answers = ["sounddevice>=0.4", "faster-whisper>=1.0"]
 
 [project.scripts]
 eyetrack = "eyetrack.cli:main"

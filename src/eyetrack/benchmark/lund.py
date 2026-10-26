@@ -23,7 +23,7 @@ import pandas as pd
 import scipy.io
 
 from ..metrics.blinks import detect_blinks
-from ..metrics.events import detect_events, event_kwargs
+from ..metrics.events import detect_events, detect_steps, event_kwargs, step_kwargs
 from .scoring import cohen_kappa, match_events, prf, runs
 
 FIX, SAC, PSO, PUR, BLINK, UNDEF = 1, 2, 3, 4, 5, 6
@@ -94,7 +94,11 @@ def gt_saccade_amplitude(rec: Recording, s: int, e: int) -> float:
 
 
 def evaluate(gt_rec: Recording, sim: Recording, ev_kwargs: dict, cfg_blinks: dict) -> dict:
-    sacc, fix, labels = detect_events(sim.t_s, sim.x_deg, sim.y_deg, sim.valid, **ev_kwargs)
+    if ev_kwargs.get("method") == "step":
+        kw = {k: v for k, v in ev_kwargs.items() if k != "method"}
+        sacc, fix, labels = detect_steps(sim.t_s, sim.x_deg, sim.y_deg, sim.valid, **kw)
+    else:
+        sacc, fix, labels = detect_events(sim.t_s, sim.x_deg, sim.y_deg, sim.valid, **ev_kwargs)
     dt = 1 / gt_rec.fs
     # ground truth from the full-rate labels, in seconds
     gt_sac = [(gt_rec.t_s[s], gt_rec.t_s[e - 1] + dt) for s, e in gt_events(gt_rec, SAC)]
@@ -157,9 +161,18 @@ def ground_truth_files(root: Path) -> list[Path]:
 
 
 def run(root: str | Path, cfg: dict, rates=(500, 120, 60, 24), noises=(0.0, 0.2, 0.5),
-        ev_kwargs: dict | None = None) -> pd.DataFrame:
+        ev_kwargs: dict | None = None, repeats: int = 1, seed: int | None = None) -> pd.DataFrame:
+    """Score the detectors on every labelled file, at each rate and noise level.
+
+    The added noise is a fresh random draw each run (seed=None), so results reflect how the detector copes
+    with noise in general, not with one particular draw. repeats > 1 draws it several times (column
+    `repeat`) to show the spread. Pass the same seed to compare two settings on identical noise.
+    """
     root = Path(root)
-    ev_kwargs = ev_kwargs or event_kwargs(cfg["events"])
+    rng = np.random.default_rng(seed)
+    if ev_kwargs is None:
+        ev_kwargs = ({"method": "step", **step_kwargs(cfg["events"])} if cfg["events"].get("method") == "step"
+                     else event_kwargs(cfg["events"]))
     files = ground_truth_files(root)
     if not files:
         raise FileNotFoundError(f"No Lund2013 files under {root}. See the module docstring to download.")
@@ -167,12 +180,13 @@ def run(root: str | Path, cfg: dict, rates=(500, 120, 60, 24), noises=(0.0, 0.2,
     for r, f in zip(recs, files):
         r.stimulus = "img" if "img" in f.name else f.parent.name
     rows = []
-    for fs in rates:
-        for noise in noises:
-            for rec in recs:
-                sim = resample(rec, fs, noise, seed=hash(rec.name) % 2**32)
-                rows.append({"rate_hz": fs, "noise_deg": noise, "file": rec.name, "stimulus": rec.stimulus,
-                             **evaluate(rec, sim, ev_kwargs, cfg["blinks"])})
+    for rep in range(repeats):
+        for fs in rates:
+            for noise in noises:
+                for rec in recs:
+                    sim = resample(rec, fs, noise, seed=int(rng.integers(2**32)))
+                    rows.append({"repeat": rep, "rate_hz": fs, "noise_deg": noise, "file": rec.name,
+                                 "stimulus": rec.stimulus, **evaluate(rec, sim, ev_kwargs, cfg["blinks"])})
     return pd.DataFrame(rows)
 
 

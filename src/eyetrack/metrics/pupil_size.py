@@ -52,21 +52,25 @@ def baseline_correct(t_s: np.ndarray, diameter: np.ndarray, events_s: list[float
 
 
 def marker_epochs(t_s: np.ndarray, diameter: np.ndarray, markers: pd.DataFrame, labels: list[str],
-                  baseline_ms: float = 500, max_window_s: float = 30.0) -> tuple[pd.DataFrame, pd.DataFrame]:
+                  baseline_ms: float = 500, max_window_s: float = 30.0,
+                  end_ignore: tuple[str, ...] = ()) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Baseline-corrected epochs after each marker whose label is in `labels`.
 
-    Each epoch runs until the next marker (of any label) or max_window_s, so a
-    task_start epoch covers the task and a lights_on epoch covers the light period.
+    Each epoch runs until the next marker (of any label not in end_ignore) or max_window_s, so a
+    task_start epoch covers the task and a lights_on epoch covers the light period. end_ignore
+    lists markers that happen inside an epoch without ending it (a SPACE press when solved).
     Returns (long table of samples, one summary row per epoch).
     """
     t_s = np.asarray(t_s, float)
     diameter = np.asarray(diameter, float)
     m = markers.sort_values("t_s").reset_index(drop=True)
+    enders = m[~m.label.isin(end_ignore)].t_s.to_numpy()
     samples, rows = [], []
     for i, mk in m.iterrows():
         if mk.label not in labels or not (t_s[0] < mk.t_s < t_s[-1]):
             continue
-        end = m.t_s[i + 1] if i + 1 < len(m) else t_s[-1]
+        later = enders[enders > mk.t_s]
+        end = later[0] if len(later) else t_s[-1]
         window = float(min(max_window_s, end - mk.t_s))
         ep = baseline_correct(t_s, diameter, [mk.t_s], baseline_ms, window)
         k = len(rows)

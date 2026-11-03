@@ -15,7 +15,7 @@ from .metrics import blinks as blinks_mod
 from .metrics import events as events_mod
 from .metrics import pupil_size
 from .pupil.detector import DetectorParams, detect_pupil, draw_result
-from .pupil.eye_model import EyeModel
+from .pupil.eye_model import EyeModel, radius_warning
 
 
 # ---------------------------------------------------------------- inputs
@@ -183,11 +183,16 @@ def process(path: str | Path, cfg: dict, calibration: str | Path | None = None,
         t, pupil.diameter_px.to_numpy(), ~good, cfg["pupil_size"]["smoothing_ms"])
 
     # eyeball model -> rotation angles in degrees
-    eye_model = None
+    eye_model, eye_model_warning = None, None
+    em_cfg = cfg.get("eye_model") or {}
     try:
-        eye_model = EyeModel.fit(ellipses, pupil.confidence.to_numpy())
+        eye_model = EyeModel.fit(ellipses, pupil.confidence.to_numpy(), radius=em_cfg.get("radius_px"))
         yaw, pitch = eye_model.angles_deg(pupil.cx.to_numpy(), pupil.cy.to_numpy())
         pupil["yaw_deg"], pupil["pitch_deg"] = yaw, pitch
+        eye_model_warning = radius_warning(eye_model.radius, float(pupil.axis_major[good].median()),
+                                           tuple(em_cfg.get("plausible_radius", (1.5, 6.0))))
+        if eye_model_warning:
+            print(f"  WARNING: {eye_model_warning}")
     except ValueError as e:
         print(f"  eye model not fitted: {e}")
 
@@ -246,6 +251,7 @@ def process(path: str | Path, cfg: dict, calibration: str | Path | None = None,
                            if (pupil.dropout_kind == k).any()},
         "camera_gaps": int((blinks.kind == "camera_gap").sum()) if len(blinks) else 0,
         "eye_model": eye_model.to_dict() if eye_model else None,
+        "eye_model_warning": eye_model_warning,
         **pupil_size.summary(pupil.diameter_clean_px.to_numpy()),
         **events_mod.summary(saccades, fixations, duration, unit),
         "pupil_epochs": epoch_summary.to_dict(orient="records"),

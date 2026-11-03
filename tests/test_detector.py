@@ -79,3 +79,77 @@ def test_edge_method_ignores_arc_hidden_by_reflection():
     r = detect_pupil(img, DetectorParams(method="edge"))
     assert r.found and np.hypot(r.cx - 320, r.cy - 200) < 2.5
     assert r.diameter_px == pytest.approx(50, rel=0.1)
+
+
+def test_edge_penalty_prefers_a_central_pupil_over_a_dark_border():
+    import numpy as np
+    from eyetrack.pupil.detector import edge_weight, get_dark_seeds
+    img = np.full((400, 640), 120, np.uint8)
+    img[30:90, 30:90] = 5                       # dark corner (glasses frame / hair)
+    img[180:220, 300:340] = 15                  # pupil, a little less dark
+    assert get_dark_seeds(img)[0][0] < 100      # no penalty: the corner wins
+    seed = get_dark_seeds(img, edge_penalty=30, edge_margin=0.2)[0]
+    assert abs(seed[0] - 320) < 15 and abs(seed[1] - 200) < 15
+    w = edge_weight((400, 640), 0.2)
+    assert w[0, 320] == 1 and w[200, 320] == 0 and 0 < w[40, 320] < 1
+
+
+def test_search_zone_ignores_a_darker_blob_outside_it():
+    import numpy as np
+    import cv2
+    from eyetrack.pupil.detector import DetectorParams, detect_pupil
+    img = np.full((400, 640), 140, np.uint8)
+    cv2.circle(img, (60, 80), 45, 0, -1)         # very dark blob at the edge (hair / frame)
+    cv2.circle(img, (440, 150), 35, 20, -1)      # pupil near the zone's right edge, outline crosses it
+    off = detect_pupil(img, DetectorParams())
+    assert off.found and off.cx < 200            # without a zone the edge blob wins
+    r = detect_pupil(img, DetectorParams(search_zone=(0.25, 0.20, 0.75, 0.80)))
+    assert r.found and abs(r.cx - 440) < 3 and abs(r.cy - 150) < 3
+    assert 66 < r.diameter_px < 74               # whole outline kept, not clipped at the zone edge (x 480)
+
+
+def test_search_zone_with_nothing_inside_finds_nothing():
+    import numpy as np
+    import cv2
+    from eyetrack.pupil.detector import DetectorParams, detect_pupil
+    img = np.full((400, 640), 140, np.uint8)
+    cv2.circle(img, (60, 80), 45, 0, -1)
+    assert not detect_pupil(img, DetectorParams(search_zone=(0.25, 0.20, 0.75, 0.80))).found
+
+
+def test_surround_fraction_pupil_vs_edge_blob():
+    import numpy as np
+    import cv2
+    from eyetrack.pupil.detector import surround_fraction
+    img = np.full((400, 640), 140, np.uint8)
+    cv2.circle(img, (320, 200), 35, 20, -1)                     # pupil: brighter all round
+    cv2.rectangle(img, (0, 0), (60, 120), 10, -1)               # dark blob running off the top-left corner
+    find = lambda x, y: max(cv2.findContours(((img < 60) * 255).astype(np.uint8), cv2.RETR_EXTERNAL,
+                                             cv2.CHAIN_APPROX_NONE)[0],
+                            key=lambda c: -np.hypot(*(c.reshape(-1, 2).mean(0) - (x, y))))
+    assert surround_fraction(img, find(320, 200)) == 1.0
+    assert surround_fraction(img, find(30, 60)) <= 0.5
+
+
+def test_surround_picks_the_pupil_over_a_darker_edge_blob():
+    import numpy as np
+    import cv2
+    from eyetrack.pupil.detector import DetectorParams, detect_pupil
+    img = np.full((400, 640), 140, np.uint8)
+    cv2.circle(img, (40, 200), 50, 0, -1)          # darker, bigger blob cut off by the left edge
+    cv2.circle(img, (380, 210), 35, 20, -1)
+    assert detect_pupil(img, DetectorParams(n_seeds=3)).cx < 150
+    r = detect_pupil(img, DetectorParams(n_seeds=3, surround=2))
+    assert abs(r.cx - 380) < 3
+
+
+def test_zone_skips_a_shadow_reaching_into_it_and_finds_the_pupil():
+    import numpy as np
+    import cv2
+    from eyetrack.pupil.detector import DetectorParams, detect_pupil
+    img = np.full((400, 640), 120, np.uint8)
+    cv2.rectangle(img, (0, 40), (175, 300), 8, -1)     # shadow from the left edge, just into the zone (x >= 160)
+    cv2.circle(img, (360, 185), 26, 20, -1)            # pupil, less dark than the shadow
+    cv2.circle(img, (352, 176), 5, 255, -1)            # glint
+    r = detect_pupil(img, DetectorParams(search_zone=(0.25, 0.20, 0.75, 0.80)))
+    assert r.found and abs(r.cx - 360) < 4 and abs(r.cy - 185) < 4

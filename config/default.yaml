@@ -7,8 +7,18 @@ eye_camera:
   height: 400
   fps: 120              # requested; probe reports what macOS actually delivers
   fourcc: MJPG          # high-fps modes usually need MJPG over USB 2
-  exposure: null        # null = leave camera default; AVFoundation often ignores this
+  exposure: null        # null = leave camera default; AVFoundation ignores this, use uvc below
+  uvc:                  # set over USB with libusb (capture/uvc.py); remove this block for other cameras
+    vendor_id: 0x0c45   # U20CAM-9281M (Sonix); see `system_profiler SPUSBDataType`
+    product_id: 0x636d
+    exposure_ms: 8      # manual exposure. Auto exposure goes past 8.3 ms in dim IR and the camera drops
+                        # to 30 fps. null = leave the camera's own setting
+    gain: null          # 0-64 (camera default 15). The U20CAM-9281M accepts it but the image doesn't change
+                        # (15 vs 64 identical, 2026-11-01), so add LED light instead
   flip: false           # set true if the camera is mounted upside down
+  watchdog_min_fps: 100 # below this for 2 s: re-send the uvc controls, then reopen the camera. The camera has
+                        # stuck at 30 fps until reopened (2026-11-01). 100 = the `validate` alignment check.
+                        # null = off
   mirror_preview: true  # show the eye mirrored, like Photo Booth; recordings and results are unchanged
 
 scene_camera:
@@ -48,6 +58,23 @@ pupil:
   n_seeds: 1            # dark candidate regions tried
   score: jeo            # "jeo" or "shape"
   block: 20
+  # Bias against dark regions at the image border (glasses frame, hair): grey levels added to the darkest-block
+  # search at the edge, fading to 0 at edge_margin x width/height inward. LPW at 5 px: tune half 66.9% -> 67.8%
+  # (flat from 10 to 20), held-out 78.0% -> 78.0%, wrong among accepted 3.9% -> 4.0%. 0 = off
+  edge_penalty: 10
+  edge_margin: 0.2
+  # The pupil centre must be inside this box ([x0, y0, x1, y1] as fractions of the eye image), the same box the
+  # `validate` alignment screen asks you to put the pupil in. The image isn't cropped, so the outline can cross it.
+  # Re-processing the 2026-11-01 validate session: valid 89.5% -> 97.9%, jumps > 60 px 175 -> 4 (the rest were hair
+  # and frame at the image edge). Ignored by `eyetrack benchmark lpw`, whose videos aren't aligned to it. null = off
+  search_zone: [0.25, 0.20, 0.75, 0.80]
+  # Surround check: score candidates by how many of 8 directions around them are >= surround_margin grey levels
+  # brighter than the inside (a pupil is ringed by iris; hair or the frame edge isn't). LPW at 5 px with
+  # surround: 2: tune 67.8% -> 68.3%, held-out 78.0% -> 78.2%. On the 2026-11-01 session it adds nothing with
+  # search_zone on (97.9% valid, 4 jumps either way). Without the zone, n_seeds: 3 + surround: 2 gets 97.9% valid
+  # and 71 jumps (vs 89.5% / 175). Off by default; ~0.4 ms per frame. 0 = off
+  surround: 0
+  surround_margin: 10
   glint_kernel: 0       # grey opening to erase glints (did not help on LPW)
   median_blur: 0
   refine: angle         # angle | hull | none | visible (fit and score only the outline next to the iris,
@@ -57,6 +84,20 @@ pupil:
   # the old 0.6 kept 85% at the same error and dropped twice as many correct frames
   min_confidence: 0.5   # frames below this are treated as missing (blink / bad detection)
   max_size_ratio: 1.5   # drop frames whose diameter jumps >1.5x vs the 2 s rolling median (iris picked)
+
+eye_model:
+  # Eyeball radius in eye-image pixels. It sets degrees per pixel for gaze angles, saccade sizes and speeds.
+  # null = fit it per session from the pupil ellipses. On one build (2026-10/11) fitted radii ranged
+  # 53-218 px; the 53 px fit made 1 px of jitter read as 1.3 deg and labelled 33% of frames as saccades.
+  # With a fixed camera mount the radius is a property of the hardware: measure it once with
+  # `eyetrack validate --only targets` and set it in config/local.yaml. The center is always fitted.
+  radius_px: null
+  plausible_radius: [1.5, 6.0]   # warn when radius / median pupil diameter falls outside this range
+
+screen:
+  # Physical size and viewing distance, used to turn `targets` positions into visual angles.
+  width_cm: null        # visible width of the display; required for the targets measurement
+  distance_cm: 57       # eye to screen; at 57 cm, 1 cm on screen is about 1 deg
 
 blinks:
   # brightness: blink vs dropout from image brightness (eye area brighter = eyelid; whole frame darker =
@@ -110,6 +151,18 @@ pupil_size:
   epoch_labels: [lights_off, lights_on, task_start, task_end, marker]
   epoch_max_s: 30
   epoch_end_ignore: [solved]      # markers that don't end an epoch (SPACE when an arithmetic problem is solved)
+
+digit_span:
+  # How the digit-span response is measured (protocol.py, span_responses). Standard pupillometry choices, not tuned
+  # on any session: untrusted frames removed (invalid, size jumps, centre > off_track_px from the local track),
+  # gaps up to interpolate_max_ms filled, a zero-phase low-pass at lowpass_hz (a task-evoked response lasts
+  # seconds), a median baseline over baseline_s, and the response subtracted in px (Mathot et al. 2018).
+  # Trials with less than min_usable of their baseline or window usable are dropped and counted.
+  baseline_s: 1.0
+  lowpass_hz: 4
+  interpolate_max_ms: 250
+  min_usable: 0.8
+  off_track_px: 25
 
 calibration:
   aruco_dict: DICT_4X4_50

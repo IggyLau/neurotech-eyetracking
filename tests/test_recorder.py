@@ -34,3 +34,13 @@ def test_record_writes_videos_timestamps_and_meta(tmp_path):
     assert np.all(np.diff(ts.t_ns) > 0)
     meta = json.loads((session / "meta.json").read_text())
     assert meta["frames"]["eye"] == len(ts)
+
+
+def test_draw_inset_puts_the_eye_view_bottom_right():
+    from eyetrack.capture.recorder import draw_inset
+    screen = np.full((900, 1440), 128, np.uint8)
+    eye = np.zeros((400, 640, 3), np.uint8)
+    out = draw_inset(screen, eye, (0.25, 0.2, 0.75, 0.8), width=320, margin=20)
+    assert out.shape == (900, 1440, 3)
+    assert out[880 - 10, 1420 - 10].max() == 0          # inside the inset (black eye image)
+    assert out[100, 100].tolist() == [128, 128, 128]    # rest of the screen unchanged

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import time
 from pathlib import Path
@@ -41,6 +42,7 @@ def cmd_live(args, cfg):
     from .viz.live import PupilTrace, with_trace
 
     params_roi = cfg["pupil"].get("roi")
+    zone = cfg["pupil"].get("search_zone")
     trace = PupilTrace(min_confidence=cfg["pupil"]["min_confidence"],
                        baseline_s=cfg["pupil_size"]["baseline_ms"] / 1000)
     mirror = cfg["eye_camera"].get("mirror_preview", False)
@@ -78,6 +80,12 @@ def cmd_live(args, cfg):
             p95 = float(np.percentile(lat, 95)) if lat else float("nan")
             cv2.putText(vis, f"camera {fps:.0f} fps  processed {pfps:.0f} fps  latency p95 {p95:.1f} ms  "
                              f"dropped {proc.dropped}", (10, 48), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 200, 0), 2)
+            if zone:            # pupil.search_zone: the detector only accepts a pupil centred in here
+                zx0, zy0, zx1, zy1 = zone
+                if mirror:
+                    zx0, zx1 = 1 - zx1, 1 - zx0
+                vh, vw = vis.shape[:2]
+                cv2.rectangle(vis, (int(zx0 * vw), int(zy0 * vh)), (int(zx1 * vw), int(zy1 * vh)), (80, 200, 80), 1)
             if params_roi:
                 x, y, w, h = params_roi
                 x = vis.shape[1] - x - w if mirror else x
@@ -166,11 +174,17 @@ def cmd_benchmark(args, cfg):
         print("Expert vs expert saccade agreement (ceiling):", lund.human_ceiling(Path(root)))
         df = lund.run(root, cfg, rates=args.rates, noises=args.noise)
         print(lund.summarise(df).to_string())
+    elif args.dataset == "compare":
+        from .benchmark import compare
+        root = args.root or "data/datasets/lund2013"
+        rate = 120 if args.rates == [500, 120, 60, 24] else args.rates[0]
+        print(compare.run(root, cfg, rate=rate, noises=args.noise).to_string(index=False))
     else:
         from .benchmark import lpw
         from .pupil.detector import DetectorParams
         root = args.root or "data/datasets/lpw"
-        df = lpw.run(root, DetectorParams.from_config(cfg["pupil"]), step=args.step)
+        params = dataclasses.replace(DetectorParams.from_config(cfg["pupil"]), search_zone=None)  # not aligned to it
+        df = lpw.run(root, params, step=args.step)
         print(json.dumps(lpw.summarise(df, cfg["pupil"]["min_confidence"]), indent=2))
 
 
@@ -184,7 +198,8 @@ def cmd_check(args, cfg):
 def cmd_validate(args, cfg):
     from .protocol import run
     run(cfg, tuple(args.screen), align=not args.skip_align, short=args.short, process_after=not args.no_process,
-        parts=args.only or None, trials_per_level=args.trials_per_level, seed=args.seed, use_mic=not args.no_mic)
+        parts=args.only or None, trials_per_level=args.trials_per_level, seed=args.seed, use_mic=not args.no_mic,
+        inset=not args.no_inset, effort=args.effort)
 
 
 def cmd_answer_test(args, cfg):
@@ -258,7 +273,8 @@ def main(argv=None):
     s.set_defaults(func=cmd_process)
 
     s = sub.add_parser("benchmark", help="score detectors against labelled datasets in data/datasets/")
-    s.add_argument("dataset", choices=["lund", "lpw"])
+    s.add_argument("dataset", choices=["lund", "lpw", "compare"],
+                   help="compare: this package's saccade detectors vs pymovements and REMoDNaV on Lund2013")
     s.add_argument("--root", help="dataset folder (default data/datasets/lund2013 or data/datasets/lpw)")
     s.add_argument("--rates", type=float, nargs="+", default=[500, 120, 60, 24], help="lund: simulated Hz")
     s.add_argument("--noise", type=float, nargs="+", default=[0.0, 0.2, 0.5], help="lund: added noise, deg")
@@ -276,12 +292,17 @@ def main(argv=None):
                                         "protocol, then a report")
     s.add_argument("--screen", type=int, nargs=2, default=[1440, 900], metavar=("W", "H"))
     s.add_argument("--skip-align", action="store_true", help="go straight to the protocol")
+    s.add_argument("--no-inset", action="store_true",
+                   help="hide the live eye view in the bottom-right corner (it adds a little screen light)")
     s.add_argument("--short", action="store_true", help="fewer repetitions (~2.5 min) for a quick try")
     s.add_argument("--no-process", action="store_true", help="only record")
-    s.add_argument("--only", nargs="+", choices=["baseline", "blinks", "light", "reading", "arithmetic"],
-                   help="run only these parts, e.g. --only arithmetic")
-    s.add_argument("--trials-per-level", type=int, help="arithmetic problems per difficulty level (default 5)")
-    s.add_argument("--seed", type=int, help="fix the arithmetic problems, to repeat the same set")
+    s.add_argument("--effort", choices=["digit_span", "arithmetic"], default="digit_span",
+                   help="mental-effort task in a full run (default digit_span)")
+    s.add_argument("--only", nargs="+", choices=["baseline", "targets", "blinks", "light", "reading", "digit_span", "arithmetic"],
+                   help="run only these parts, e.g. --only digit_span")
+    s.add_argument("--trials-per-level", type=int,
+                   help="digit lists per length (default 4) and arithmetic problems per difficulty (default 2)")
+    s.add_argument("--seed", type=int, help="fix the digit lists and arithmetic problems, to repeat the same set")
     s.add_argument("--no-mic", action="store_true", help="don't record or score spoken answers")
     s.set_defaults(func=cmd_validate)
 
@@ -291,9 +312,10 @@ def main(argv=None):
     s.add_argument("--rescore", metavar="SESSION", help="re-score a saved answer-test session")
     s.set_defaults(func=cmd_answer_test)
 
-    s = sub.add_parser("viewer", help="frame-by-frame video viewer for one part of a processed validate session")
+    s = sub.add_parser("viewer", help="frame-by-frame video viewer for a processed validate session")
     s.add_argument("path", help="processed session folder")
-    s.add_argument("--part", default="reading", choices=["baseline", "blinks", "light", "reading", "arithmetic"])
+    s.add_argument("--part", default="all", help="'all' (whole session, default) or one protocol part",
+                   choices=["all", "baseline", "targets", "blinks", "light", "reading", "digit_span", "arithmetic"])
     s.set_defaults(func=cmd_viewer)
 
     args = p.parse_args(argv)

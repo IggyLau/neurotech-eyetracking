@@ -23,6 +23,10 @@ def timeseries_report(pupil: pd.DataFrame, saccades: pd.DataFrame, blinks: pd.Da
     ax = axes[0]
     ax.plot(t, pupil.diameter_px, color="0.75", lw=0.6, label="raw")
     ax.plot(t, pupil.diameter_clean_px, color="C0", lw=1.2, label="cleaned")
+    clean = pupil.diameter_clean_px.dropna()
+    if len(clean):      # scale to the cleaned trace: a few raw misdetections can be 100x the pupil
+        lo, hi = clean.min(), clean.max()
+        ax.set_ylim(lo - 0.15 * (hi - lo), hi + 0.15 * (hi - lo))
     ax.set_ylabel("pupil diameter (px)")
     ax.legend(loc="upper right", fontsize=8)
 
@@ -35,8 +39,12 @@ def timeseries_report(pupil: pd.DataFrame, saccades: pd.DataFrame, blinks: pd.Da
         ax.plot(t, pupil.cy, lw=0.8, label="pupil y")
     for s in saccades.itertuples():
         ax.axvspan(s.onset_s, s.offset_s, color="C3", alpha=0.25, lw=0)
+    # a tick per saccade along the top: over a whole session a saccade is narrower than a pixel, so the
+    # bands alone vanish wherever saccades are short (reading)
+    if len(saccades):
+        ax.vlines(saccades.onset_s, 0.93, 1.0, transform=ax.get_xaxis_transform(), color="C3", lw=0.5)
     ax.set_ylabel(f"eye position ({unit})")
-    ax.legend(loc="upper right", fontsize=8, title="red = saccades", title_fontsize=8)
+    ax.legend(loc="upper right", fontsize=8, title="red = saccades (tick at onset)", title_fontsize=8)
 
     ax = axes[2]
     ax.plot(t, pupil.confidence, lw=0.6, color="C2")

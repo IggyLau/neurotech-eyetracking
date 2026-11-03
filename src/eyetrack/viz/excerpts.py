@@ -184,7 +184,9 @@ def make_excerpts(session: str | Path, clips: bool = True) -> Path:
     phases["end"] = list(phases.t_s[1:]) + [float(t[-1])]
     part_of = {"baseline": "baseline", "blink_cue": "blinks", "blink_wait": "blinks", "lights_on": "light (white)",
                "lights_off": "light (dark)", "reading": "reading", "arith_fix": "arithmetic", "answer": "arithmetic",
-               "task_easy": "arithmetic", "task_medium": "arithmetic", "task_hard": "arithmetic"}
+               "task_easy": "arithmetic", "task_medium": "arithmetic", "task_hard": "arithmetic",
+               "span_fix": "digit span", "span_3": "digit span", "span_5": "digit span", "span_7": "digit span",
+               "recall": "digit span"}
     part = np.full(len(t), "", dtype=object)
     for ph in phases.itertuples():
         if ph.label in part_of:
@@ -211,7 +213,7 @@ def make_excerpts(session: str | Path, clips: bool = True) -> Path:
                 break
 
     def plot_rates(ax):
-        order = ["baseline", "blinks", "light (dark)", "light (white)", "reading", "arithmetic"]
+        order = ["baseline", "blinks", "light (dark)", "light (white)", "reading", "digit span", "arithmetic"]
         rates = [pupil[pupil.part == p_].valid.mean() * 100 if (pupil.part == p_).any() else np.nan for p_ in order]
         ax.barh(order, rates, color=["C0" if r >= 90 else "C1" if r >= 75 else "C3" for r in rates])
         ax.axvline(95, color="k", lw=0.6, ls=":")

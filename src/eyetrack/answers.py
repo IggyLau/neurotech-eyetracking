@@ -166,12 +166,34 @@ def parse_number(text: str) -> int | None:
     return total + current if seen else None
 
 
+_DIGIT_WORDS = {"zero": "0", "oh": "0", "o": "0", "one": "1", "two": "2", "to": "2", "too": "2", "three": "3",
+                "four": "4", "for": "4", "five": "5", "six": "6", "seven": "7", "eight": "8", "ate": "8",
+                "nine": "9"}
+
+
+def parse_digits(text: str) -> str | None:
+    """The digit sequence in a transcript of digits said one by one: "4 7 2", "472", "four, seven, two"
+    -> "472". Returns None if there are none."""
+    out = []
+    for tok in re.findall(r"\d+|[a-z]+", text.lower()):
+        if tok.isdigit():
+            out.append(tok)
+        elif tok in _DIGIT_WORDS:
+            out.append(_DIGIT_WORDS[tok])
+    return "".join(out) or None
+
+
 # ---------------------------------------------------------------- transcription
 
 _MODEL = None
 
 
-def transcribe(audio: np.ndarray, sr: int = SAMPLE_RATE, model_size: str = "base.en") -> str:
+NUMBER_PROMPT = "The answer is a number, for example 42, 204, 168."
+DIGITS_PROMPT = "Digits said one at a time, for example 4 7 2 9 1."
+
+
+def transcribe(audio: np.ndarray, sr: int = SAMPLE_RATE, model_size: str = "base.en",
+               prompt: str = NUMBER_PROMPT) -> str:
     """Offline transcription of one short clip. Numbers are hinted to the model so it prefers digits."""
     global _MODEL
     if _MODEL is None:
@@ -184,23 +206,23 @@ def transcribe(audio: np.ndarray, sr: int = SAMPLE_RATE, model_size: str = "base
     if peak > 0:
         audio = audio / peak * 0.5      # quiet speech is transcribed better at a normal level
     segments, _ = _MODEL.transcribe(audio.astype(np.float32), language="en", beam_size=5,
-                                    initial_prompt="The answer is a number, for example 42, 204, 168.",
+                                    initial_prompt=prompt,
                                     vad_filter=False, condition_on_previous_text=False)
     return " ".join(s.text.strip() for s in segments).strip()
 
 
-def _transcribe_all(clips: list[np.ndarray], sr: int) -> list[str]:
-    return [transcribe(c, sr) if len(c) else "" for c in clips]
+def _transcribe_all(clips: list[np.ndarray], sr: int, prompt: str = NUMBER_PROMPT) -> list[str]:
+    return [transcribe(c, sr, prompt=prompt) if len(c) else "" for c in clips]
 
 
-def transcribe_clips(clips: list[np.ndarray], sr: int = SAMPLE_RATE) -> list[str]:
+def transcribe_clips(clips: list[np.ndarray], sr: int = SAMPLE_RATE, prompt: str = NUMBER_PROMPT) -> list[str]:
     """Transcribe in a separate process. faster-whisper's video library (PyAV) and OpenCV each bundle
     their own copy of ffmpeg's libavdevice; loading both in one process gives duplicate-class warnings
     and can crash, so the speech model never shares a process with the camera code."""
     import multiprocessing as mp
     from concurrent.futures import ProcessPoolExecutor
     with ProcessPoolExecutor(max_workers=1, mp_context=mp.get_context("spawn")) as pool:
-        return pool.submit(_transcribe_all, clips, sr).result()
+        return pool.submit(_transcribe_all, clips, sr, prompt).result()
 
 
 def score_answers(audio: np.ndarray, sr: int, windows: list[tuple[float, float]], expected: list[int | None],

@@ -49,6 +49,20 @@ class DetectorParams:
     max_aspect: float = 3.0
     block: int = 20               # darkest-block size, px
     ignore_border: int = 20
+    # Soft bias against dark regions near the image border (glasses frame, hair, mount): grey levels added
+    # to the darkest-block search at the edge, fading linearly to 0 at edge_margin x width/height inward
+    edge_penalty: float = 0.0
+    edge_margin: float = 0.2
+    # The pupil centre must lie in this box, as fractions of the full image [x0, y0, x1, y1]. Unlike roi, the
+    # image isn't cropped, so a pupil near the box edge keeps its whole outline. None = anywhere
+    search_zone: tuple[float, float, float, float] | None = None
+    # Surround check: a pupil is darker than the iris on every side; hair or a frame edge isn't. The ring just
+    # outside the candidate is split into surround_sectors directions, and each counts if it is at least
+    # surround_margin grey levels brighter than the inside (off the image counts as not brighter). The candidate
+    # score is multiplied by (fraction of sectors that count) ** surround; 0 = off
+    surround: float = 0.0
+    surround_margin: int = 10
+    surround_sectors: int = 8
     roi: tuple[int, int, int, int] | None = None   # x, y, w, h
     glint_kernel: int = 0         # >0: grey-level opening that erases bright glints/reflections smaller than this
     median_blur: int = 0          # >0: median filter (odd px) against sensor noise / eyelashes
@@ -77,13 +91,15 @@ class DetectorParams:
     def from_config(cls, pcfg: dict) -> "DetectorParams":
         keys = ["search_box", "min_area", "max_aspect", "glint_kernel", "median_blur",
                 "close_kernel", "close_iterations", "refine", "n_seeds", "score", "block", "bright_margin",
+                "edge_penalty", "edge_margin", "surround", "surround_margin", "surround_sectors",
                 "method", "edge_roi_scale", "edge_roi_min", "edge_intensity_range", "edge_bright_margin", "edge_canny_low",
                 "edge_canny_high", "edge_inlier_px", "edge_iterations", "pl_pupil_size_min", "pl_pupil_size_max"]
         kw = {k: pcfg[k] for k in keys if k in pcfg}
         if "edge_radii" in pcfg:
             kw["edge_radii"] = tuple(pcfg["edge_radii"])
         return cls(threshold_offsets=tuple(pcfg.get("threshold_offsets", (5, 15, 25))),
-                   roi=tuple(pcfg["roi"]) if pcfg.get("roi") else None, **kw)
+                   roi=tuple(pcfg["roi"]) if pcfg.get("roi") else None,
+                   search_zone=tuple(pcfg["search_zone"]) if pcfg.get("search_zone") else None, **kw)
 
 
 def to_gray(image: np.ndarray) -> np.ndarray:
@@ -103,14 +119,30 @@ def get_darkest_area(gray: np.ndarray, block: int = 20, ignore_border: int = 20)
     return int(min_loc[0]), int(min_loc[1])
 
 
+def edge_weight(shape: tuple[int, int], margin: float) -> np.ndarray:
+    """1 at the image border, falling linearly to 0 at margin x width (x) / height (y) inward."""
+    h, w = shape
+    x = np.minimum(np.arange(w), np.arange(w)[::-1]) / max(margin * w, 1)
+    y = np.minimum(np.arange(h), np.arange(h)[::-1]) / max(margin * h, 1)
+    return np.clip(1 - np.minimum.outer(y, x), 0, 1).astype(np.float32)
+
+
 def get_dark_seeds(gray: np.ndarray, n: int = 1, block: int = 20, ignore_border: int = 20,
-                   min_dist: int = 100) -> list[tuple[int, int]]:
+                   min_dist: int = 100, edge_penalty: float = 0.0, edge_margin: float = 0.2,
+                   zone: tuple[int, int, int, int] | None = None) -> list[tuple[int, int]]:
     """Up to n darkest block centers, at least min_dist apart (n=1 is JEO's single darkest point).
 
     Several seeds let the detector try the pupil *and* e.g. a mascara clump or a glasses
     frame, then keep whichever looks most like a pupil.
     """
     mean = cv2.blur(gray, (block, block)).astype(np.float32)
+    if edge_penalty:
+        mean += edge_penalty * edge_weight(mean.shape, edge_margin)
+    if zone is not None:                    # x0, y0, x1, y1 in px: seeds only inside
+        x0, y0, x1, y1 = zone
+        inside = np.zeros(mean.shape, bool)
+        inside[max(y0, 0):max(y1, 0), max(x0, 0):max(x1, 0)] = True
+        mean[~inside] = np.inf
     b = ignore_border + block // 2
     if mean.shape[0] > 2 * b and mean.shape[1] > 2 * b:
         mean[:b, :] = np.inf
@@ -135,6 +167,44 @@ def ellipse_contrast(gray: np.ndarray, contour: np.ndarray, ring_px: int = 12) -
     if not mask.any() or not ring.any():
         return 0.0
     return float(cv2.mean(gray, ring)[0] - cv2.mean(gray, mask)[0]) / 255.0
+
+
+def surround_fraction(gray: np.ndarray, contour: np.ndarray, margin: int = 10, sectors: int = 8,
+                      ring_px: int = 12, n_angles: int = 64) -> float:
+    """Share of directions around the fitted ellipse where the band just outside it is at least `margin` grey
+    levels brighter than the inside. A pupil scores ~1; a dark blob at the image edge or against hair scores
+    lower. Sampled at n_angles points per ring (cheap enough for every candidate at 120 fps); directions
+    whose samples fall off the image count as not brighter."""
+    (cx, cy), (w, h), ang = cv2.fitEllipse(contour)
+    H, W = gray.shape
+    if not np.isfinite([cx, cy, w, h]).all() or min(w, h) <= 0 or max(w, h) > max(H, W):
+        return 0.0                          # degenerate fits can be thousands of px across: not a pupil
+    t = np.linspace(0, 2 * np.pi, n_angles, endpoint=False)
+    c, s_ = np.cos(np.radians(ang)), np.sin(np.radians(ang))
+
+    def sample(da: float, scale: float = 1.0):
+        x = (w / 2 * scale + da) * np.cos(t)
+        y = (h / 2 * scale + da) * np.sin(t)
+        px = np.rint(cx + x * c - y * s_).astype(int)
+        py = np.rint(cy + x * s_ + y * c).astype(int)
+        ok = (px >= 0) & (px < W) & (py >= 0) & (py < H)
+        val = np.full(n_angles, np.nan, np.float32)
+        val[ok] = gray[py[ok], px[ok]]
+        return val
+
+    inside = np.concatenate([sample(0, k) for k in (0.25, 0.5, 0.7)])
+    if np.isnan(inside).all():
+        return 0.0
+    inside_mean = float(np.nanmean(inside))
+    outside = np.stack([sample(d) for d in np.linspace(ring_px / 3, ring_px, 3)])   # 3 x n_angles
+    per_sector = outside.reshape(3, sectors, n_angles // sectors)
+    good = 0
+    for k in range(sectors):
+        vals = per_sector[:, k]
+        if np.isnan(vals).mean() > 0.5:      # mostly off the image
+            continue
+        good += float(np.nanmean(vals)) - inside_mean >= margin
+    return good / sectors
 
 
 def apply_binary_threshold(gray: np.ndarray, darkest_value: int, added: int) -> np.ndarray:
@@ -239,7 +309,19 @@ def detect_pupil(image: np.ndarray, params: DetectorParams | None = None) -> Pup
         gray = cv2.morphologyEx(gray, cv2.MORPH_OPEN, k)
     close_k = np.ones((params.close_kernel, params.close_kernel), np.uint8)
 
-    seeds = get_dark_seeds(gray, params.n_seeds, params.block, params.ignore_border, params.search_box // 2)
+    zone = None
+    if params.search_zone:
+        H, W = gray_full.shape
+        fx0, fy0, fx1, fy1 = params.search_zone
+        zone = (int(fx0 * W) - ox, int(fy0 * H) - oy, int(fx1 * W) - ox, int(fy1 * H) - oy)
+    # With a zone, a shadow reaching just inside it can be the darkest spot; its blob is centred outside and
+    # rejected. Then the next darkest spots are tried in order and the first that passes is kept, so the
+    # darkest valid spot still wins (unlike n_seeds > 1, which keeps the best-scoring of all).
+    first_pass = zone is not None and params.n_seeds == 1
+    seeds = get_dark_seeds(gray, 3 if first_pass else params.n_seeds, params.block, params.ignore_border,
+                           params.search_box // 2, params.edge_penalty, params.edge_margin, zone)
+    if not seeds:
+        return PupilResult(found=False)
     darkest = seeds[0]
     blurred = cv2.blur(gray, (5, 5))
 
@@ -256,14 +338,24 @@ def detect_pupil(image: np.ndarray, params: DetectorParams | None = None) -> Pup
             contour = filter_contours_by_area_and_return_largest(contours, params.min_area, params.max_aspect)
             if contour is None or len(contour) <= 5:
                 continue
+            if zone is not None:            # the blob's centre has to be in the zone, not just its seed
+                mo = cv2.moments(contour)
+                if mo["m00"] <= 0 or not (zone[0] <= mo["m10"] / mo["m00"] < zone[2]
+                                          and zone[1] <= mo["m01"] / mo["m00"] < zone[3]):
+                    continue
             filled = check_ellipse_goodness(closed, contour)
             n_thick, ratio = check_contour_pixels(contour, closed.shape)
             if params.score == "jeo":
                 score = filled * n_thick * n_thick * ratio
             else:  # "shape": elliptical, solid and darker than its surroundings - size-independent
                 score = filled * ratio * max(ellipse_contrast(gray, contour), 0.0)
+            if params.surround:
+                score *= surround_fraction(gray, contour, params.surround_margin,
+                                           params.surround_sectors) ** params.surround
             if score > best_score:
                 best_score, best_contour, best_ratio, best_value = score, contour, ratio, seed_value
+        if first_pass and best_contour is not None:
+            break
 
     result = PupilResult(found=False, darkest=(darkest[0] + ox, darkest[1] + oy))
     if best_contour is None:
@@ -281,6 +373,8 @@ def detect_pupil(image: np.ndarray, params: DetectorParams | None = None) -> Pup
     (cx, cy), (w, h), angle = cv2.fitEllipse(refined)
     if not np.isfinite([cx, cy, w, h]).all() or min(w, h) <= 0:
         return result
+    if zone is not None and not (zone[0] <= cx < zone[2] and zone[1] <= cy < zone[3]):
+        return result                       # the fitted ellipse ran off the zone (e.g. merged with a shadow)
     result.found = True
     result.cx, result.cy = cx + ox, cy + oy
     result.axis_minor, result.axis_major = (w, h) if w <= h else (h, w)

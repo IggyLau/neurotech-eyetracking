@@ -92,6 +92,33 @@ saccades (image viewing).
 - Above about 0.3° noise none of this helps. At 0.5° the step detector finds more saccades (F1 0.86 vs 0.81 on
   image viewing), but both overestimate durations by 30–50 ms.
 
+### Glitch rejection and saccades hidden by lost tracking
+
+On a low-cost tracker, glare tends to hide the pupil during large saccades, and single bad frames make the
+position jump out and back. `--loss` simulates lost frames after resampling:
+
+```bash
+eyetrack benchmark lund --rates 120 --noise 0.2 0.5 --loss saccade   # or --loss random
+```
+
+`random` loses runs of 1–4 frames (about 5% of frames). `saccade` loses tracking for 30–150 ms around 30% of
+the expert-labelled saccades. Expert blink labels mark which gaps are blinks, standing in for the pipeline's
+brightness-based blink classifier, since Lund has no images. Held-out files (video + dots), 120 Hz, 3 noise draws,
+saccade F1 (precision / recall in brackets):
+
+| Lost frames | Noise | Without the two rules | `persist_ratio: 0.5` + `bridge_gap_ms: 150` |
+|---|---|---|---|
+| none | 0.2° | 0.789 (0.80 / 0.78) | 0.784 (0.83 / 0.74) |
+| none | 0.5° | 0.624 (0.67 / 0.59) | 0.628 (0.81 / 0.51) |
+| random | 0.2° | 0.769 (0.76 / 0.78) | 0.779 (0.82 / 0.74) |
+| random | 0.5° | 0.618 (0.67 / 0.58) | 0.628 (0.81 / 0.51) |
+| saccade | 0.2° | 0.617 (0.73 / 0.53) | **0.718** (0.82 / 0.64) |
+| saccade | 0.5° | 0.469 (0.61 / 0.38) | **0.590** (0.82 / 0.46) |
+
+On the tuning files (image viewing) with saccade loss, bridge limits of 100 / 150 / 200 ms gave F1 0.81 / 0.85 /
+0.86 at 0.2°, and persistence ratios of 0.3 / 0.5 / 0.7 gave 0.85 / 0.85 / 0.84. Persistence trades some recall for
+precision; bridging recovers most of what lost tracking costs and changes nothing when no frames are lost.
+
 ### Compared with other open-source detectors
 
 `eyetrack benchmark compare` runs this package's detectors and two established Python implementations on the

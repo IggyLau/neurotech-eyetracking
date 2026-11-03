@@ -43,3 +43,16 @@ def test_radius_warning_flags_implausible_scales():
     assert radius_warning(53, 52) is not None and "small" in radius_warning(53, 52)   # the 2026-11-02 session
     assert radius_warning(130, 52) is None
     assert "large" in radius_warning(400, 52)
+
+
+def test_fallback_model_scales_with_the_pupil_and_keeps_every_pupil_on_the_sphere():
+    from eyetrack.pupil.eye_model import fallback_model
+    bad = EyeModel(320.0, 200.0, 50.0, 100, 2.0)
+    px = 320 + np.linspace(-60, 60, 50)
+    py = np.full(50, 200.0)
+    m = fallback_model(bad, pupil_diameter_px=55.0, ratio=2.7, px=px, py=py)
+    assert (m.cx, m.cy) == (bad.cx, bad.cy) and m.radius_source == "fallback"
+    assert m.radius == pytest.approx(2.7 * 55.0)
+    tight = fallback_model(bad, pupil_diameter_px=20.0, ratio=2.7, px=px, py=py)
+    assert tight.radius >= 60 * 1.05 * 0.99          # pupils up to 60 px from the center still get angles
+    assert np.isfinite(tight.angles_deg(px, py)[0]).all()

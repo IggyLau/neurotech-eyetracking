@@ -93,6 +93,12 @@ eye_model:
   # `eyetrack validate --only targets` and set it in config/local.yaml. The center is always fitted.
   radius_px: null
   plausible_radius: [1.5, 6.0]   # warn when radius / median pupil diameter falls outside this range
+  # When a fitted radius is outside plausible_radius (and radius_px isn't set), use this many median pupil
+  # diameters instead, so one bad fit can't turn pixel jitter into saccades. On this build, fits that passed
+  # were 2.4-3.3x the pupil diameter (5 sessions, Oct-Nov 2026); the failed 2026-11-02 fit was 0.9x. Re-running
+  # that session at 120-160 px (2.1-2.8x) gave reading 2.8-3.0 saccades/s and 12-13% saccade frames either way.
+  # null = keep the bad fit and only warn
+  fallback_ratio: 2.7
 
 screen:
   # Physical size and viewing distance, used to turn `targets` positions into visual angles.
@@ -143,6 +149,21 @@ events:
   # duration error from +9 ms to +1 ms. Both are I-VT only.
   fill_gap_ms: 35                 # interpolate runs of missing samples up to this long (4 frames at 120 Hz)
   duration_bias_samples: 1        # subtract 1 sample interval from saccade durations
+  # Glitches and saccades hidden by glare (2026-11-03). Lund2013 at 120 Hz, tuned on image viewing, reported on
+  # held-out video + dots, 3 noise draws; `eyetrack benchmark lund --loss saccade` loses tracking around 30% of
+  # saccades for 30-150 ms, as glare does on this build. Held-out F1 at 0.2 / 0.5 deg noise:
+  #   no loss:        0.789 / 0.624 -> 0.784 / 0.628 (precision 0.80 / 0.67 -> 0.83 / 0.81)
+  #   saccade loss:   0.617 / 0.469 -> 0.718 / 0.590
+  # persist_ratio: a candidate must leave the eye at least this share of its amplitude away from where it started
+  # (medians over persist_ms either side). Rejects out-and-back detector glitches. 0.3 and 0.5 tie on the tuning
+  # half, 0.7 loses real saccades. 0 = off
+  persist_ratio: 0.5
+  persist_ms: 50
+  # bridge_gap_ms: a tracking gap up to this long counts as a saccade if the eye ends up far enough away to have
+  # moved at >= velocity_threshold on average. Blinks are never bridged. 100 / 150 / 200 ms gave tuning F1
+  # 0.81 / 0.85 / 0.86 with saccade loss; 200 only wins on gaps at the edge of the simulation, and longer real
+  # gaps often hide more than one saccade, so 150. 0 = off
+  bridge_gap_ms: 150
 
 pupil_size:
   smoothing_ms: 50

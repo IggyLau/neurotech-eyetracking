@@ -58,7 +58,8 @@ class EyeModel:
     radius: float
     n_used: int = 0
     residual_px: float = np.nan
-    radius_source: str = "fitted"     # "fitted" from the ellipses, or "fixed" (passed in, e.g. from config)
+    radius_source: str = "fitted"     # "fitted" from the ellipses, "fixed" (passed in, e.g. from config), or
+    #                                   "fallback" (the fit was implausible; set from the pupil size in pipeline.py)
 
     @classmethod
     def fit(cls, ellipses: list[tuple], confidences: np.ndarray | None = None,
@@ -142,6 +143,17 @@ def radius_warning(radius: float, pupil_diameter_px: float, bounds=(1.5, 6.0)) -
     return (f"eye model radius {radius:.0f} px is {ratio:.1f}x the pupil diameter ({pupil_diameter_px:.0f} px), "
             f"too {side} to be physical (expected {bounds[0]}-{bounds[1]}x). Angles, saccade sizes and speeds are "
             "scaled wrongly; set eye_model.radius_px from a `targets` measurement.")
+
+
+def fallback_model(model: EyeModel, pupil_diameter_px: float, ratio: float, px: np.ndarray, py: np.ndarray) -> EyeModel:
+    """The same center with radius = ratio x pupil diameter, for when the fitted radius can't be physical.
+
+    The radius is kept above the 99th percentile of the pupil's distance from the center (x 1.05), so almost every
+    pupil position still lands on the sphere and gets an angle.
+    """
+    reach = float(np.nanpercentile(np.hypot(np.asarray(px, float) - model.cx, np.asarray(py, float) - model.cy), 99))
+    radius = max(ratio * pupil_diameter_px, 1.05 * reach)
+    return EyeModel(model.cx, model.cy, radius, model.n_used, model.residual_px, "fallback")
 
 
 def angle_between(a: np.ndarray, b: np.ndarray) -> np.ndarray:

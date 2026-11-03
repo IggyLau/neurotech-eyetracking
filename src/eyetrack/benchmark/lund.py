@@ -84,6 +84,36 @@ def resample(rec: Recording, fs_out: float, noise_deg: float = 0.0, seed: int = 
     return Recording(rec.name, rec.stimulus, t, x, y, rec.valid[idx], rec.label[idx], min(fs_out, rec.fs))
 
 
+def drop_frames(sim: Recording, mode: str, rng: np.random.Generator, share: float = 0.3) -> Recording:
+    """Mark frames as lost, as a low-cost camera loses them.
+
+    random:  runs of 1-4 frames at random, about 5% of frames (screen flicker, single bad frames).
+    saccade: tracking lost around `share` of the expert-labelled saccades, a run of 30-150 ms that covers
+             the saccade (glare and reflections sweeping over the pupil during large eye movements).
+    """
+    if mode == "none":
+        return sim
+    lost = np.zeros(len(sim.t_s), bool)
+    if mode == "random":
+        n = len(lost)
+        while lost.mean() < 0.05:
+            s = int(rng.integers(n))
+            lost[s:s + int(rng.integers(1, 5))] = True
+    elif mode == "saccade":
+        dt = 1 / sim.fs
+        for s, e in runs(sim.label == SAC):
+            if rng.random() >= share:
+                continue
+            gap = rng.uniform(0.030, 0.150)
+            mid = (sim.t_s[s] + sim.t_s[e - 1]) / 2
+            lost |= (sim.t_s >= mid - gap / 2 - dt / 2) & (sim.t_s <= mid + gap / 2)
+    else:
+        raise ValueError(f"unknown loss mode {mode!r}")
+    x, y = sim.x_deg.copy(), sim.y_deg.copy()
+    x[lost] = y[lost] = np.nan
+    return Recording(sim.name, sim.stimulus, sim.t_s, x, y, sim.valid & ~lost, sim.label, sim.fs)
+
+
 def gt_events(rec: Recording, code: int) -> list[tuple[int, int]]:
     return runs(rec.label == code)
 
@@ -98,7 +128,10 @@ def evaluate(gt_rec: Recording, sim: Recording, ev_kwargs: dict, cfg_blinks: dic
         kw = {k: v for k, v in ev_kwargs.items() if k != "method"}
         sacc, fix, labels = detect_steps(sim.t_s, sim.x_deg, sim.y_deg, sim.valid, **kw)
     else:
-        sacc, fix, labels = detect_events(sim.t_s, sim.x_deg, sim.y_deg, sim.valid, **ev_kwargs)
+        # Blinks are known in the pipeline (from image brightness) and are never bridged as saccades; Lund has
+        # no images, so the expert blink labels stand in for that classifier here.
+        sacc, fix, labels = detect_events(sim.t_s, sim.x_deg, sim.y_deg, sim.valid, exclude=sim.label == BLINK,
+                                          **ev_kwargs)
     dt = 1 / gt_rec.fs
     # ground truth from the full-rate labels, in seconds
     gt_sac = [(gt_rec.t_s[s], gt_rec.t_s[e - 1] + dt) for s, e in gt_events(gt_rec, SAC)]
@@ -161,12 +194,14 @@ def ground_truth_files(root: Path) -> list[Path]:
 
 
 def run(root: str | Path, cfg: dict, rates=(500, 120, 60, 24), noises=(0.0, 0.2, 0.5),
-        ev_kwargs: dict | None = None, repeats: int = 1, seed: int | None = None) -> pd.DataFrame:
+        ev_kwargs: dict | None = None, repeats: int = 1, seed: int | None = None,
+        loss: str = "none") -> pd.DataFrame:
     """Score the detectors on every labelled file, at each rate and noise level.
 
     The added noise is a fresh random draw each run (seed=None), so results reflect how the detector copes
     with noise in general, not with one particular draw. repeats > 1 draws it several times (column
     `repeat`) to show the spread. Pass the same seed to compare two settings on identical noise.
+    loss: lost frames to simulate after resampling (see drop_frames): none | random | saccade.
     """
     root = Path(root)
     rng = np.random.default_rng(seed)
@@ -184,7 +219,7 @@ def run(root: str | Path, cfg: dict, rates=(500, 120, 60, 24), noises=(0.0, 0.2,
         for fs in rates:
             for noise in noises:
                 for rec in recs:
-                    sim = resample(rec, fs, noise, seed=int(rng.integers(2**32)))
+                    sim = drop_frames(resample(rec, fs, noise, seed=int(rng.integers(2**32))), loss, rng)
                     rows.append({"repeat": rep, "rate_hz": fs, "noise_deg": noise, "file": rec.name,
                                  "stimulus": rec.stimulus, **evaluate(rec, sim, ev_kwargs, cfg["blinks"])})
     return pd.DataFrame(rows)

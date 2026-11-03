@@ -182,3 +182,40 @@ def test_duration_bias_correction_subtracts_one_sample():
     b, _, _ = detect_events(t, x, y, threshold=30, duration_bias_samples=1)
     assert len(a) == len(b)
     assert (a.duration_ms - b.duration_ms).to_numpy() == pytest.approx(1000 / 120, abs=0.01)
+
+
+def _flat_with_noise(fs=120, seconds=3.0, sd=0.05, seed=0):
+    rng = np.random.default_rng(seed)
+    t = np.arange(0, seconds, 1 / fs)
+    return t, rng.normal(0, sd, len(t)), rng.normal(0, sd, len(t))
+
+
+def test_persistence_rejects_an_out_and_back_glitch_but_keeps_a_step():
+    t, x, y = _flat_with_noise()
+    x[120:122] += 3.0                      # two frames jump out and come back: a glitch
+    x[240:] += 3.0                         # the eye moves and stays: a saccade
+    kept, _, _ = detect_events(t, x, y, threshold=30)
+    assert len(kept) == 2
+    sacc, _, _ = detect_events(t, x, y, threshold=30, persist_ratio=0.5)
+    assert len(sacc) == 1 and sacc.onset_s.iloc[0] == pytest.approx(t[240], abs=0.02)
+    assert sacc.attrs["spikes_rejected"] == 1
+
+
+def test_bridging_finds_a_saccade_hidden_in_a_tracking_gap():
+    t, x, y = _flat_with_noise()
+    x[180:] += 10.0                        # a 10 deg saccade at 1.5 s ...
+    valid = np.ones(len(t), bool)
+    valid[174:186] = False                 # ... inside 100 ms of lost tracking
+    plain, _, _ = detect_events(t, x, y, valid, threshold=30, fill_gap_ms=35)
+    assert len(plain) == 0
+    sacc, _, labels = detect_events(t, x, y, valid, threshold=30, fill_gap_ms=35, bridge_gap_ms=150)
+    assert len(sacc) == 1 and bool(sacc.inferred.iloc[0])
+    assert sacc.amplitude.iloc[0] == pytest.approx(10, abs=0.5)
+    assert (labels[174:186] == "sac").all()
+    # a blink is never bridged, and neither is a slow drift across the gap
+    blink, _, _ = detect_events(t, x, y, valid, threshold=30, bridge_gap_ms=150, exclude=~valid)
+    assert len(blink) == 0
+    t2, x2, y2 = _flat_with_noise(seed=1)
+    x2[180:] += 2.0                        # 2 deg over a 108 ms gap is ~19 deg/s, below 30 deg/s
+    drift, _, _ = detect_events(t2, x2, y2, valid, threshold=30, bridge_gap_ms=150)
+    assert len(drift) == 0

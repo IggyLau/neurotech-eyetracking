@@ -69,7 +69,8 @@ def detect_events(t_s, x, y, valid=None, threshold: float | str = "adaptive", mi
                   min_fixation_ms: float = 60, smoothing_ms: float = 20.0, min_threshold: float = 30.0,
                   merge_gap_ms: float = 0.0, adaptive_k: float = 6.0, min_amplitude: float = 0.0,
                   amplitude_noise_factor: float = 0.0, fill_gap_ms: float = 0.0,
-                  duration_bias_samples: float = 0.0) -> tuple[pd.DataFrame, pd.DataFrame, np.ndarray]:
+                  duration_bias_samples: float = 0.0, persist_ratio: float = 0.0, persist_ms: float = 50.0,
+                  bridge_gap_ms: float = 0.0, exclude=None) -> tuple[pd.DataFrame, pd.DataFrame, np.ndarray]:
     """Return (saccades, fixations, per-sample label array: 'fix'|'sac'|'none').
 
     threshold: a number (units/s) or "adaptive" (Nyström & Holmqvist, k*SD, floored at min_threshold).
@@ -82,6 +83,16 @@ def detect_events(t_s, x, y, valid=None, threshold: float | str = "adaptive", mi
         the saccade around it.
     duration_bias_samples: subtract this many sample intervals from saccade durations. Velocity
         smoothing keeps the speed above threshold after the eye has landed, so durations run long.
+    persist_ratio: drop a candidate unless the eye stays moved. The net displacement between the median
+        position over persist_ms before it and persist_ms after it must be at least this share of its
+        amplitude (and above the amplitude floor). A saccade moves the eye to a new place; a detector glitch
+        (a lash or glare taken for the pupil for a frame or two) jumps out and back. 0 = off.
+    bridge_gap_ms: a run of missing samples longer than fill_gap_ms but at most this long counts as a
+        saccade when the eye is somewhere else afterwards, far enough that it must have moved at least at
+        the velocity threshold on average (and by more than the amplitude floor). On a low-cost tracker,
+        glare often hides large saccades. These rows have `inferred` = True, no duration and no peak
+        velocity. 0 = off.
+    exclude: samples that are never bridged, such as blinks: the eye can't be followed through a closed lid.
     """
     t_s = np.asarray(t_s, float)
     x = np.asarray(x, float)
@@ -116,7 +127,17 @@ def detect_events(t_s, x, y, valid=None, threshold: float | str = "adaptive", mi
                 fast[s:e] = True
     noise = rms_s2s(x, y, measured & ~fast)
     amp_floor = max(min_amplitude, amplitude_noise_factor * noise)
+    excl = np.zeros(len(t_s), bool) if exclude is None else np.asarray(exclude, bool)
+    pw = persist_ms / 1000
+
+    def settled(i0: int, i1: int) -> np.ndarray | None:
+        """Median measured position over samples i0..i1-1 (None if fewer than 2)."""
+        k = np.arange(max(i0, 0), min(i1, len(t_s)))
+        k = k[measured[k]]
+        return np.array([np.median(x[k]), np.median(y[k])]) if len(k) >= 2 else None
+
     saccades = []
+    n_spikes = 0
     for s, e in _runs(fast):
         dur_ms = (t_s[e - 1] - t_s[s]) * 1000 + _dt_ms(t_s)
         if dur_ms < min_saccade_ms:
@@ -129,13 +150,45 @@ def detect_events(t_s, x, y, valid=None, threshold: float | str = "adaptive", mi
         amplitude = float(np.hypot(xi[b] - xi[a], yi[b] - yi[a]))
         if amplitude < amp_floor:
             continue
+        if persist_ratio > 0:
+            before = settled(int(np.searchsorted(t_s, t_s[a] - pw, "left")), a + 1)
+            after = settled(b, int(np.searchsorted(t_s, t_s[b] + pw, "right")))
+            if before is not None and after is not None:
+                net = float(np.hypot(*(after - before)))
+                if net < max(amp_floor, persist_ratio * amplitude):
+                    n_spikes += 1
+                    continue
         labels[s:e] = "sac"
         saccades.append({
             "onset_s": t_s[s], "offset_s": t_s[e - 1], "duration_ms": dur_ms,
             "start_x": xi[a], "start_y": yi[a], "end_x": xi[b], "end_y": yi[b],
             "amplitude": amplitude,
-            "peak_velocity": float(np.nanmax(speed[s:e])),
+            "peak_velocity": float(np.nanmax(speed[s:e])), "inferred": False,
         })
+
+    n_bridged = 0
+    if bridge_gap_ms > 0 and len(t_s) > 1:
+        for s, e in _runs(~valid):
+            if s == 0 or e >= len(t_s) or excl[s:e].any():
+                continue
+            gap_s = t_s[e] - t_s[s - 1]
+            if gap_s * 1000 > bridge_gap_ms or (labels[max(s - 2, 0):min(e + 2, len(t_s))] == "sac").any():
+                continue
+            before = settled(int(np.searchsorted(t_s, t_s[s - 1] - pw, "left")), s)
+            after = settled(e, int(np.searchsorted(t_s, t_s[e] + pw, "right")))
+            if before is None or after is None:
+                continue
+            amplitude = float(np.hypot(*(after - before)))
+            if amplitude < max(amp_floor, threshold * gap_s):
+                continue
+            n_bridged += 1
+            labels[s:e] = "sac"
+            saccades.append({
+                "onset_s": t_s[s - 1], "offset_s": t_s[e], "duration_ms": np.nan,
+                "start_x": before[0], "start_y": before[1], "end_x": after[0], "end_y": after[1],
+                "amplitude": amplitude, "peak_velocity": np.nan, "inferred": True,
+            })
+        saccades.sort(key=lambda r: r["onset_s"])
 
     fixations = []
     for s, e in _runs(valid & (labels != "sac")):
@@ -150,12 +203,16 @@ def detect_events(t_s, x, y, valid=None, threshold: float | str = "adaptive", mi
             "dispersion": float((np.nanmax(fx) - np.nanmin(fx)) + (np.nanmax(fy) - np.nanmin(fy))),
         })
 
-    sac_cols = ["onset_s", "offset_s", "duration_ms", "start_x", "start_y", "end_x", "end_y", "amplitude", "peak_velocity"]
+    sac_cols = ["onset_s", "offset_s", "duration_ms", "start_x", "start_y", "end_x", "end_y", "amplitude",
+                "peak_velocity", "inferred"]
     fix_cols = ["onset_s", "offset_s", "duration_ms", "x", "y", "dispersion"]
     sacc_df = pd.DataFrame(saccades, columns=sac_cols)
+    sacc_df["inferred"] = sacc_df["inferred"].astype(bool)
     sacc_df.attrs["velocity_threshold"] = float(threshold)
     sacc_df.attrs["noise_rms_s2s"] = noise
     sacc_df.attrs["amplitude_floor"] = amp_floor
+    sacc_df.attrs["spikes_rejected"] = n_spikes
+    sacc_df.attrs["bridged"] = n_bridged
     return sacc_df, pd.DataFrame(fixations, columns=fix_cols), labels
 
 
@@ -296,7 +353,7 @@ def event_kwargs(cfg_events: dict) -> dict:
     """detect_events() keyword arguments from the `events` config section (degree units)."""
     keys = ["min_threshold", "adaptive_k", "amplitude_noise_factor", "min_amplitude",
             "min_saccade_ms", "min_fixation_ms", "smoothing_ms", "merge_gap_ms"]
-    optional = ["fill_gap_ms", "duration_bias_samples"]
+    optional = ["fill_gap_ms", "duration_bias_samples", "persist_ratio", "persist_ms", "bridge_gap_ms"]
     return {"threshold": cfg_events["velocity_threshold"], **{k: cfg_events[k] for k in keys},
             **{k: cfg_events[k] for k in optional if k in cfg_events}}
 
@@ -317,6 +374,9 @@ def summary(saccades: pd.DataFrame, fixations: pd.DataFrame, duration_s: float, 
         "unit": unit,
         "saccade_count": int(len(saccades)),
         "saccade_rate_per_s": len(saccades) / duration_s if duration_s else None,
+        # saccades inferred across tracking gaps (no duration or peak velocity), and glitches rejected
+        "saccades_inferred": int(saccades["inferred"].sum()) if "inferred" in saccades else 0,
+        "spikes_rejected": saccades.attrs.get("spikes_rejected", 0),
         "fixation_count": int(len(fixations)),
         # precision of the eye signal (RMS sample-to-sample); compare with docs/benchmarks.md noise levels
         f"noise_rms_s2s_{unit}": saccades.attrs.get("noise_rms_s2s"),

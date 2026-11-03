@@ -108,7 +108,7 @@ eyetrack --config config/local.yaml record
 |---|---|
 | `pupil.csv` | Per frame: pupil center, ellipse, diameter (raw and cleaned), confidence, validity, eye angles (`yaw_deg`, `pitch_deg`), event label |
 | `blinks.csv` | Onset, offset, duration and type (`blink`, `low_confidence`, `closed_or_lost`, `dropout`) |
-| `saccades.csv` | Onset, offset, duration, amplitude, peak velocity |
+| `saccades.csv` | Onset, offset, duration, amplitude, peak velocity, and `inferred` for saccades bridged across a tracking gap |
 | `fixations.csv` | Onset, offset, duration, position, dispersion |
 | `gaze.csv` | Gaze in scene-camera pixels (with `--calibration`) |
 | `aoi.csv` | Area-of-interest metrics (with `--calibration` and `--aois`) |
@@ -158,11 +158,11 @@ eyetrack benchmark lpw
 Found on the reference build during validation sessions in late October and early November 2026.
 
 - **Glare and screen reflections cause tracking loss.** Direct IR LEDs leave glare on the iris and dark edges that can be taken for the pupil, and a bright screen reflects on the cornea. Valid frames range from about 57% to 98% depending on the task. An 850 nm IR-pass filter and diffused LEDs are the planned fix ([docs/hardware.md](docs/hardware.md)).
-- **Large saccades are often missed while reading.** Tracking tends to drop out during the jump back to the start of a line. In one 45 s reading test, about 15 line changes were visible in the eye-position trace but only 6 were detected as single saccades.
-- **A fitted eyeball radius can be badly off.** Fits on the same hardware ranged from 53 to 218 px. A radius that is too small inflates gaze angles, saccade sizes and speeds, and the saccade count. Measure it with `eyetrack validate --only targets` and set `eye_model.radius_px`; the pipeline warns when a fitted radius looks implausible.
+- **Tracking drops out during large saccades.** Glare often hides the pupil during the jump back to the start of a line. Gaps of up to 150 ms are now bridged and the saccade recorded as `inferred` (no duration or peak velocity); longer gaps are still lost.
+- **A fitted eyeball radius can be badly off.** Fits on the same hardware ranged from 46 to 218 px. A radius that is too small inflates gaze angles, saccade sizes and speeds, and the saccade count. When a fit is implausible the pipeline now falls back to 2.7× the pupil diameter, so sizes in degrees are approximate. Measure the radius with `eyetrack validate --only targets` and set `eye_model.radius_px`.
 - **Live saccade flags miss most small saccades.** Without an eye model, the real-time path uses a pixel threshold (`events.velocity_threshold_px`, 400 px/s), which is roughly 140–190 °/s at typical radii. In one session it flagged 159 saccades where offline processing found 1,962. Set `realtime.eye_model` to an earlier session folder to run the live path in degrees. Offline processing remains the reference.
 - **The live SACCADE label is hard to see.** It shows only on frames inside a saccade, about 20 ms.
-- **Reading fixations look short.** Medians of 111–198 ms against a typical 200–250 ms suggest noise is splitting fixations.
+- **Reading fixations were short with a bad eye-model fit.** Medians of 111–198 ms came from noise splitting fixations; with the radius fallback and glitch rejection, a re-processed session gives 200 ms, at the low end of the typical 200–250 ms.
 - **The blink confidence threshold isn't validated on labelled blinks** from this camera. It was set from one cued-blink test.
 - **Mental-effort pupil responses aren't reliable yet.** Digit-span dilation goes in the expected direction but with too few trials, and lid, lashes and speech add noise.
 - **USB dropouts.** The camera can drop off the bus or fall back to auto exposure mid-recording. The watchdog recovers it, but frames in between are lost.

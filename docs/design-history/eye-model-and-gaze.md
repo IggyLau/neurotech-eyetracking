@@ -62,6 +62,19 @@ position into yaw and pitch. **It is known to be wrong for our camera geometry**
     point ~10–12 mm behind it and is 2–8 mm across.
 - Not yet measured on real data. The dots step covers the "look around" item below only partly (9 directions).
 
+### 6. Fallback when the fit is implausible (2026-11-03)
+- A warning alone didn't help: the 53 px radius was still used, and every downstream number was wrong.
+- **Changed:** when the fitted radius is outside `plausible_radius` and no `radius_px` is set, the pipeline
+  uses `fallback_ratio` × the median pupil diameter (2.7), kept above the 99th percentile of the pupil's
+  distance from the centre so pupils still land on the sphere. `metrics_summary.json` records
+  `radius_source: fallback` and the warning says so.
+- **Why 2.7:** fits that passed on this build were 2.4–3.3× the pupil diameter (5 sessions, Oct–Nov 2026).
+  The failed 2026-11-02 fit was 0.9×, and a re-run on 2026-11-03 fitted 46 px (0.8×). Re-running that session
+  at 120–160 px gave reading 2.8–3.0 saccades/s and 12–13% saccade frames either way, so the exact ratio matters
+  less than avoiding the bad fit.
+- This is a stopgap. Pupil size changes with light, so the fallback radius shifts between sessions; a measured
+  `radius_px` is still the fix.
+
 ## Planned
 1. **9-point screen calibration**, with 4–5 extra points held out to measure accuracy, repeated at the end for
    drift. Map pupil position to screen degrees with the existing polynomial mapper. This gives real degrees and

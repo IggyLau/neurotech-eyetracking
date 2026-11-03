@@ -172,7 +172,7 @@ def cmd_benchmark(args, cfg):
         from .benchmark import lund
         root = args.root or "data/datasets/lund2013"
         print("Expert vs expert saccade agreement (ceiling):", lund.human_ceiling(Path(root)))
-        df = lund.run(root, cfg, rates=args.rates, noises=args.noise)
+        df = lund.run(root, cfg, rates=args.rates, noises=args.noise, loss=args.loss)
         print(lund.summarise(df).to_string())
     elif args.dataset == "compare":
         from .benchmark import compare
@@ -278,6 +278,8 @@ def main(argv=None):
     s.add_argument("--root", help="dataset folder (default data/datasets/lund2013 or data/datasets/lpw)")
     s.add_argument("--rates", type=float, nargs="+", default=[500, 120, 60, 24], help="lund: simulated Hz")
     s.add_argument("--noise", type=float, nargs="+", default=[0.0, 0.2, 0.5], help="lund: added noise, deg")
+    s.add_argument("--loss", choices=["none", "random", "saccade"], default="none",
+                   help="lund: simulate lost frames (random 1-4 frame runs, or tracking lost during saccades)")
     s.add_argument("--step", type=int, default=10, help="lpw: evaluate every Nth frame")
     s.set_defaults(func=cmd_benchmark)
 

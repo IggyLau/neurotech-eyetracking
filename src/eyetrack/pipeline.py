@@ -15,7 +15,7 @@ from .metrics import blinks as blinks_mod
 from .metrics import events as events_mod
 from .metrics import pupil_size
 from .pupil.detector import DetectorParams, detect_pupil, draw_result
-from .pupil.eye_model import EyeModel, radius_warning
+from .pupil.eye_model import EyeModel, fallback_model, radius_warning
 
 
 # ---------------------------------------------------------------- inputs
@@ -187,12 +187,17 @@ def process(path: str | Path, cfg: dict, calibration: str | Path | None = None,
     em_cfg = cfg.get("eye_model") or {}
     try:
         eye_model = EyeModel.fit(ellipses, pupil.confidence.to_numpy(), radius=em_cfg.get("radius_px"))
-        yaw, pitch = eye_model.angles_deg(pupil.cx.to_numpy(), pupil.cy.to_numpy())
-        pupil["yaw_deg"], pupil["pitch_deg"] = yaw, pitch
-        eye_model_warning = radius_warning(eye_model.radius, float(pupil.axis_major[good].median()),
-                                           tuple(em_cfg.get("plausible_radius", (1.5, 6.0))))
+        pupil_d = float(pupil.axis_major[good].median())
+        eye_model_warning = radius_warning(eye_model.radius, pupil_d, tuple(em_cfg.get("plausible_radius", (1.5, 6.0))))
+        if eye_model_warning and eye_model.radius_source == "fitted" and em_cfg.get("fallback_ratio"):
+            eye_model = fallback_model(eye_model, pupil_d, em_cfg["fallback_ratio"],
+                                       pupil.cx[good].to_numpy(), pupil.cy[good].to_numpy())
+            eye_model_warning += (f" Using {eye_model.radius:.0f} px instead ({em_cfg['fallback_ratio']} x the pupil "
+                                  "diameter); sizes and speeds in degrees are approximate.")
         if eye_model_warning:
             print(f"  WARNING: {eye_model_warning}")
+        yaw, pitch = eye_model.angles_deg(pupil.cx.to_numpy(), pupil.cy.to_numpy())
+        pupil["yaw_deg"], pupil["pitch_deg"] = yaw, pitch
     except ValueError as e:
         print(f"  eye model not fitted: {e}")
 
@@ -210,7 +215,8 @@ def process(path: str | Path, cfg: dict, calibration: str | Path | None = None,
         saccades, fixations, labels = events_mod.detect_steps(t, ex.to_numpy(), ey.to_numpy(), pupil.valid.to_numpy(),
                                                               exclude=in_blink, **st_kwargs)
     else:
-        saccades, fixations, labels = events_mod.detect_events(t, ex.to_numpy(), ey.to_numpy(), good, **ev_kwargs)
+        saccades, fixations, labels = events_mod.detect_events(t, ex.to_numpy(), ey.to_numpy(), good,
+                                                               exclude=in_blink, **ev_kwargs)
     pupil["event"] = labels
 
     markers = load_markers(inp, t0_ns)

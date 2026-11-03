@@ -3,7 +3,9 @@
 **Current choice:** I-VT (`metrics/events.py`, `detect_events`), configured as follows:
 - velocity threshold of 30 °/s;
 - candidates smaller than 3× the measured noise are rejected;
+- candidates that don't leave the eye at least half their size away are rejected as glitches (`persist_ratio: 0.5`);
 - runs of up to 4 missing frames (`fill_gap_ms: 35`) are interpolated first;
+- tracking gaps up to 150 ms that the eye must have jumped across count as inferred saccades (`bridge_gap_ms: 150`);
 - one sample is subtracted from each duration (`duration_bias_samples: 1`).
 
 The step detector (`method: step`) is kept for very noisy recordings, around 0.5° and above.
@@ -87,6 +89,31 @@ At 0.15° noise on Lund image viewing (closest to reading):
 - Over 5 fresh draws at 0.2°: F1 0.86 ± 0.01 old and new; duration 42.5 ± 1.9 → **34 ± 1.9 ms** (true 28 ms).
   The improvement held on every draw.
 
+### 10. Glitches and saccades lost to glare (2026-11-03)
+On the 2026-11-02 session, with the radius problem set aside (eye-model-and-gaze.md iteration 6), two faults were
+left:
+- **Glitches:** a lash or glare taken for the pupil for a frame or two makes the position jump out and back.
+  I-VT sees two fast samples and calls it a saccade. Most leftover detections at the fixation cross were *not*
+  this: 95% of them left the eye in a new place, so they are real small saccades. That ruled out the first idea,
+  a minimum of 2 frames per saccade, which would have deleted them.
+- **Saccades inside dropouts:** glare often hides the pupil during large saccades, such as the jump back at the
+  start of a line. I-VT needs unbroken samples and drops a candidate whose start or end is missing.
+
+Two rules were added to `detect_events`, both scored on Lund2013 at 120 Hz with a new lost-frames simulation
+(`eyetrack benchmark lund --loss saccade`: tracking lost for 30–150 ms around 30% of expert saccades). Tuned on
+image viewing, reported on the held-out video and dots files, 3 noise draws:
+- **Persistence (`persist_ratio: 0.5`):** the median position over 50 ms after a candidate must be at least half
+  its amplitude away from the median over 50 ms before it. Held-out precision at 0.5° noise rose from 0.67 to
+  0.81, recall fell 0.59 → 0.51, F1 0.624 → 0.628. Ratios 0.3 and 0.5 tied on the tuning half; 0.7 lost real
+  saccades.
+- **Bridging (`bridge_gap_ms: 150`):** a tracking gap up to 150 ms counts as a saccade (flagged `inferred`) if
+  the eye ends up far enough away to have moved at the velocity threshold on average. Blinks are never bridged.
+  With saccade loss, held-out F1 rose 0.617 → 0.718 at 0.2° and 0.469 → 0.590 at 0.5°. Without loss nothing
+  changed. 200 ms scored slightly higher on the tuning half, but only on gaps at the simulation's own upper
+  edge, and real gaps longer than ~150 ms often hide more than one saccade.
+
+Full tables are in [benchmarks.md](../benchmarks.md).
+
 ## Why the final choice
 At the noise the improved hardware should reach, I-VT with gap filling is the most accurate on all three things
 we care about:
@@ -113,8 +140,20 @@ The live (real-time) saccade flag is a simpler causal check. It matched only 14%
 reading replay, so use it as a monitor; `saccades.csv` is the measurement.
 
 On 2026-11-02 saccades fired at 3–7/s in every part, including fixation. The cause was a 53 px fitted
-eye-model radius, not the detector; see [eye-model-and-gaze.md](eye-model-and-gaze.md) iteration 5. Detector
-settings are unchanged.
+eye-model radius, not the detector; see [eye-model-and-gaze.md](eye-model-and-gaze.md) iteration 5.
+
+Re-processed on 2026-11-03 with the radius fallback, persistence and bridging (iteration 10):
+
+| Part | Before | After | Frames labelled saccade (after) |
+|---|---|---|---|
+| Fixation cross | 3.3/s | 1.2/s | 2.7% |
+| Cued blinks | 5.7/s | 0.8/s | 1.9% |
+| Reading | 3.9/s | 3.2/s | 14% |
+
+Reading now sits in the published range (3–4 saccades/s, 20–40 ms each, Rayner 1998) and in the Lund experts'
+range of 5–12% of time in saccades. All 15 jumps back to a new line that are visible in the position trace are
+detected. 130 glitches were rejected and 9 saccades inferred across gaps over the whole session. The fixation-cross
+rate is mostly real small saccades of about 1°, but sizes still rest on an estimated radius.
 
 ## Open questions
 - No hand-labelled saccades from our own camera yet. Labelling ~60 s of a recording would replace the Lund proxy.

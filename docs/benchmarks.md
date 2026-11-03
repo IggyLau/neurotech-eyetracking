@@ -9,6 +9,7 @@ git clone https://github.com/richardandersson/EyeMovementDetectorEvaluation data
 curl -L -o data/datasets/LPW.zip http://datasets.d2.mpi-inf.mpg.de/tonsen/LPW.zip && unzip data/datasets/LPW.zip -d data/datasets/lpw
 eyetrack benchmark lund          # saccades, fixations, blinks
 eyetrack benchmark lpw           # pupil detection
+eyetrack benchmark compare       # saccades vs pymovements and REMoDNaV (needs .[compare])
 ```
 
 | Dataset | What it is | Used for |
@@ -90,6 +91,37 @@ saccades (image viewing).
   general rather than one draw. Use `repeats` to see the spread, and the same `seed` to compare two settings.
 - Above about 0.3° noise none of this helps. At 0.5° the step detector finds more saccades (F1 0.86 vs 0.81 on
   image viewing), but both overestimate durations by 30–50 ms.
+
+### Compared with other open-source detectors
+
+`eyetrack benchmark compare` runs this package's detectors and two established Python implementations on the
+same signal: Lund2013 resampled to 120 Hz with noise added, all 34 files, scored with the same event matching.
+It needs the optional packages from `pip install -e ".[compare]"`.
+
+| Noise | eyetrack I-VT (default) | eyetrack step | pymovements (Engbert-Kliegl) | REMoDNaV* |
+|---|---|---|---|---|
+| 0° | 0.88 / 0.94 / **0.91** | 0.83 / 0.86 / 0.84 | 0.75 / 0.97 / 0.85 | 0.95 / 0.93 / **0.94** |
+| 0.2° | 0.87 / 0.88 / **0.88** | 0.82 / 0.86 / 0.84 | 0.88 / 0.85 / **0.87** | 0.85 / 0.79 / 0.82 |
+| 0.5° | 0.84 / 0.72 / 0.77 | 0.80 / 0.83 / **0.82** | 0.85 / 0.62 / 0.72 | 0.77 / 0.66 / 0.71 |
+| Amplitude error at 0.2° | 0.34° | 0.33° | 0.32° | 0.38° |
+
+Cells are precision / recall / F1 for saccades. \*REMoDNaV raised an error on the 8 files that contain blinks
+(its filters cannot handle gaps), so its scores cover the other 26 files.
+
+How the methods differ:
+
+| | eyetrack I-VT | pymovements | REMoDNaV |
+|---|---|---|---|
+| Velocity | Sample-to-sample difference (Savitzky-Golay smoothing at higher rates); short gaps interpolated | 5-point moving-average difference | Median filter + Savitzky-Golay, then difference |
+| Threshold | Fixed 30 °/s | Adaptive per axis: λ (6) × median-based velocity SD, elliptic | Adaptive and local: iterated median + 10 × MAD, recomputed in a 1 s window around each candidate |
+| Noise handling | Rejects candidates smaller than 3× the measured RMS-S2S noise | Threshold rises with noise | Threshold rises with noise |
+| Other classes | Fixations; blinks detected separately | Saccades only | Fixations, smooth pursuit, post-saccadic oscillations |
+
+All three label runs of fast samples as saccades and drop runs shorter than a minimum duration. They differ
+in how they keep noise out. The adaptive thresholds of pymovements and REMoDNaV rise with noise, which costs
+small saccades at 120 Hz. eyetrack keeps the threshold fixed and rejects movements too small to be real.
+REMoDNaV is the most precise on clean data because it separates post-saccadic oscillations, but it needs
+gap-free input.
 
 ### Effect of frame rate (tuned defaults, all files)
 

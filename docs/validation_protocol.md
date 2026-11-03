@@ -4,53 +4,93 @@ A short set of recordings that shows which measurements a particular headset giv
 on every new build, after moving the camera or LEDs, or before a study. It takes about 15 minutes.
 
 The order matters: signal quality (T1) decides which later results can be trusted. For example,
-if pupil size varies more than mental effort changes it, the arithmetic test can't show anything.
+if pupil size varies more than mental effort changes it, the digit-span test can't show anything.
 
 ## Quick guided version: `eyetrack validate`
 
 ```bash
-.venv/bin/eyetrack --config config/local.yaml validate                      # ~7 min, everything
+.venv/bin/eyetrack --config config/local.yaml validate                      # ~6 min, everything
 .venv/bin/eyetrack --config config/local.yaml validate --short              # ~3 min, fewer repetitions
-.venv/bin/eyetrack --config config/local.yaml validate --only arithmetic    # ~5 min, the effort test alone
+.venv/bin/eyetrack --config config/local.yaml validate --only digit_span    # ~4 min, the effort test alone
+.venv/bin/eyetrack --config config/local.yaml validate --effort arithmetic  # mental arithmetic instead of digit span
 ```
 
-`--trials-per-level N` changes the number of arithmetic problems per difficulty (default 5), and
-`--seed N` repeats the same problem set across sessions.
+`--trials-per-level N` changes the number of digit lists per length (default 4) and of arithmetic
+problems per difficulty (default 2). `--seed N` repeats the same lists and problems across sessions.
+
+Set the screen size in `config/local.yaml` once, so the dots part can turn screen positions into angles:
+
+```yaml
+screen:
+  width_cm: 30.4      # visible width of the display (measure it)
+  distance_cm: 57     # eye to screen
+```
+
+The report then gives the measured eye model radius, with a line to paste into `config/local.yaml`
+(`eye_model: {radius_px: ...}`). Use the median of a few sessions. Once it's set, every session uses that
+scale instead of fitting its own, so saccade sizes and speeds can be compared between sessions. Re-measure
+after moving the camera. Without a fixed radius, `eyetrack process` warns when the fitted one can't be
+physical.
 
 Run it from Terminal.app. First set screen brightness high and fixed (auto-brightness, True Tone
 and Night Shift off), keep room lighting constant, and sit ~57 cm from the screen.
 
 1. **Aim the camera.** A live eye view with a target box. Five checks must all be green for 2 s:
    pupil found (confidence ≥ 0.7), inside the box, a sensible size, ≥ 100 fps, tracked ≥ 90% of
-   the last 2 s. Hints say what to adjust. SPACE starts; F starts anyway.
+   the last 2 s. Hints say what to adjust. SPACE starts; F starts anyway. The detector only accepts a
+   pupil centred inside the box (`pupil.search_zone`), so dark hair or the glasses frame at the image
+   edge can't be taken for the pupil. If the pupil drifts out of the box, it's reported as lost.
 2. **The protocol** runs full screen and is recorded as one session (`data/<date>_validate/`), with
-   a marker at every step:
+   a marker at every step. A small live eye view with the target box sits in the bottom-right corner, so
+   you can check the camera hasn't moved. It adds a little light to the screen; `--no-inset` hides it.
 
    | Part | Screen | Duration | Paradigm |
    |---|---|---|---|
    | Baseline | Cross on mid-grey | 20 s | Resting pupil size and noise |
+   | Dots | A dot at each of 9 positions (3 × 3 grid), 2.5 s each | 23 s | Measures the eye model's radius, which sets degrees per pixel |
    | Blinks | `BLINK` cue every 3 s | 30 s | Cued blinks, scored as detected within 1.5 s |
    | Light reflex | 8 s black, then 3 × (3 s white, 7 s black) | 38 s | Pupil light reflex after dark adaptation |
    | Reading | Black text on white | 45 s | Reading fixations and saccades |
-   | Arithmetic | Cross on constant grey; problem shown 2 s; press SPACE when solved, then say the answer. 20 s break halfway | 15 × 8–18 s | Task-evoked dilation at three difficulties (Hess & Polt 1964; Ahern & Beatty 1979) |
+   | Digit span | Cross on constant grey; digits spoken one per second, 2 s hold, then say the digits back | 12 × 13–20 s | Task-evoked dilation from memory load (Kahneman & Beatty 1966) |
 
-   The arithmetic has 5 problems at each level, never repeated within a session:
+   **Digit span.** 12 lists, 4 each of 3, 5 and 7 digits (1–9, no repeats within a list), mixed so every
+   group of three has one of each length. The digits are spoken by the macOS voice (`say`), so nothing on
+   screen changes; off macOS they're shown small above the cross instead. Each trial: 4 s fixation, the
+   digits at one per second, 2 s of silent holding, then "say the digits" for 4.5–6.5 s. The pupil widens
+   with each digit held and peaks before recall. Before measuring, untrusted frames are removed (invalid,
+   size jumps, or an ellipse away from the pupil's track, such as a lash), gaps up to 250 ms are filled,
+   and the trace is smoothed with a 4 Hz low-pass. Dilation is the mean size from the last digit to the end
+   of the hold minus the median size over the 1 s before the first digit, in pixels; the report also gives
+   it as a percentage of the session's typical baseline. A list is dropped (and counted) when less than 80%
+   of its baseline or window is usable, or when there was speech during the hold. The settings are in the
+   `digit_span` block of `config/default.yaml`. Wait for the prompt: saying a long list early is natural,
+   but it moves the pupil far more than the memory load does. The recall is recorded,
+   transcribed offline and scored (exact match, and digits in the right position) in `span_answers.csv`;
+   speech during the hold is flagged. The lists are saved in `span_trials.csv`, and the per-trial
+   dilation in `span_trials_pupil.csv`. Seven digits stays within normal memory span: longer lists stop
+   dilating the pupil further once they can't be held (Granholm et al. 1996).
+
+   **Arithmetic (optional, `--effort arithmetic` or `--only arithmetic`).** Cross on constant grey; the
+   problem is shown for 2 s; press SPACE when solved, then say the answer (Hess & Polt 1964; Ahern &
+   Beatty 1979). 2 problems at each level by default, never repeated within a session:
 
    | Level | Problems | Example |
    |---|---|---|
-   | Easy | one digit × one digit (3–9) | 6 × 7 |
-   | Medium | two digits × one digit (13–29 × 3–9) | 24 × 7 |
+   | Easy | a small times-table fact (2–4 × 2–9) | 3 × 7 |
+   | Medium | two digits × one digit (12–29 × 2–9), getting harder each time (by size of the product): the first is near 12 × 3, the last near 28 × 9 | 24 × 7 |
    | Hard | two digits × two digits (12–19) | 17 × 13 |
 
    The levels are mixed so each is spread across the session: every group of three trials has one
    of each, in random order. That way tiredness or drift late in the session affects all levels
-   equally. The problems and answers are saved in `trials.csv`.
+   equally. The exception is medium, which gets harder through the session, so its late trials mix
+   difficulty with time on task. The problems and answers are saved in `trials.csv`. With 6 or more
+   problems there's a 20 s break halfway.
 
    **Answers.** Press **SPACE** once, the moment you have the answer; "say your answer" appears
    straight away and you say it out loud (4 s). Without SPACE, the prompt appears after 10 s.
    SPACE gives a silent **solve time**, and the pupil is measured from the problem appearing up to
    SPACE, so speaking stays outside the measurement. A held or double-tapped key counts once
-   (presses within 1 s are ignored). The microphone records the arithmetic part; afterwards each
+   (presses within 1 s are ignored). The microphone records the effort part; afterwards each
    answer is transcribed offline and checked. An answer said too early (before SPACE) is still
    scored, but that trial is flagged as talking while solving and left out of the dilation average.
 
@@ -58,10 +98,20 @@ and Night Shift off), keep room lighting constant, and sit ~57 cm from the scree
    protocol still runs, with `--no-mic` behaviour. `eyetrack answer-test` checks SPACE timing, the
    microphone and transcription on their own in a minute.
 
+   A dot in the bottom-right corner shows whether tracking is still working: green is fine; amber or red
+   means the pupil is near the edge, lost, or the camera has stopped (see [realtime.md](realtime.md)). If it
+   stays red, press Q and re-aim rather than finishing the session.
+
 3. **The report** appears on screen and is saved as `validation_report.json`: light-reflex
-   constriction and timing, dilation at each difficulty (mean ± standard error over its 5 trials),
-   pupil noise at rest, cued blinks detected, reading fixation and saccade figures, and signal
-   quality. `arithmetic_trials.csv` lists every problem with its solve time, what was heard,
+   constriction and timing, digit-span dilation at each list length (mean ± standard error) and how
+   many lists were recalled, pupil noise at rest, cued blinks detected, reading fixation and saccade
+   figures, and signal quality.
+
+   The digit-span verdict is **graded** if dilation rises 3 < 5 < 7 digits and 7 exceeds 3 by more than
+   twice their combined standard error; **clear** if only 7 vs 3 passes that test; **weak** if 7 digits
+   dilates by at least 2% but the gap is within the noise.
+
+   For an arithmetic run, the report shows dilation and accuracy per difficulty instead. `arithmetic_trials.csv` lists every problem with its solve time, what was heard,
    whether it was correct, whether you talked while solving, and its dilation
    (`arithmetic_answers.csv` and `audio.wav` hold the raw answer data).
 
@@ -73,10 +123,9 @@ and Night Shift off), keep room lighting constant, and sit ~57 cm from the scree
 
    The effort verdict is **graded** if dilation rises easy < medium < hard and hard exceeds easy by
    more than twice their combined standard error; **clear** if only hard vs easy passes that test;
-   **weak** if hard dilates by at least 2% but the gap is within the noise. With 5 trials per level,
+   **weak** if hard dilates by at least 2% but the gap is within the noise. With few trials per level,
    small differences may not separate from the noise. The standard error shrinks with the square root
-   of the number of trials, so `--only arithmetic --trials-per-level 10` cuts it by about 30% and
-   20 per level halves it.
+   of the number of trials, so doubling `--trials-per-level` cuts it by about 30%.
 
 The separate recordings below (T1–T6) give the same information plus drift and saccade accuracy,
 and let you repeat one part at a time.

@@ -22,10 +22,33 @@ How to build it is in [hardware.md](../hardware.md); this file records why.
 - **macOS:** camera and microphone access only works when `eyetrack` is launched from Terminal.app (or the app's
   terminal tabs), not from other shells.
 
+### Frame rate drops to 30 fps (2026-10-27)
+- Both sessions that evening switched from 120 to 30 fps part-way, and never recovered.
+- Ruled out by reading the camera's settings over USB: trigger mode (off) and "Low Light Compensation"
+  (auto-exposure priority, off).
+- **Cause:** auto exposure had lengthened the exposure to 30 ms, more than one frame at 120 fps.
+- **Fix:** manual exposure at 8 ms, set over USB at every camera start (`capture/uvc.py`), because
+  AVFoundation ignores OpenCV's exposure setting.
+
+### Stuck at 30 fps with manual exposure (2026-11-01)
+- One `eyetrack live` session ran at 30 fps the whole time, although the camera read back manual 8 ms
+  exposure. Tests right after it held 120 fps (no window, preview, preview + live processing,
+  `live`), and closing and reopening the camera fixed it. Cause unknown.
+- **Fix:** a frame-rate watchdog in `capture/camera.py`. Below 100 fps for 2 s, re-send the UVC controls;
+  if still low 2 s later, reopen the camera. 100 fps matches the `validate` alignment check.
+- The first `validate` run with the watchdog had the camera drop off USB (libusb: device not found, 0 fps).
+  Reopening every 2–4 s didn't help and kept flipping the image between bright (camera's own auto exposure
+  after each restart) and dark (8 ms). Reopens now back off: 2, 4, 8, 16, then 30 s.
+
+### Gain does nothing (2026-11-01)
+- At 8 ms, gain 15, 30, 45 and 64 were set over USB and read back correctly, but the image was identical
+  (mean grey 28–29, same scene). The 30 fps limit rules out longer exposure, so more IR light is the only
+  way to a brighter image at 120 fps.
+
 ### Lens (for the filter)
 - M12 mount, 2.8 mm, F2.2, about 148° diagonal field of view, focus set by screwing the lens, per InnoMaker's
   manual.
-- The front diameter isn't documented; measure it before buying a filter.
+- Front diameter Ø14 mm (manual drawing), so a front filter must be wider than 14 mm.
 
 ## Illumination
 

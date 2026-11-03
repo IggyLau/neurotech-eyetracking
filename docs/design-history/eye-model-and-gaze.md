@@ -32,6 +32,36 @@ position into yaw and pitch. **It is known to be wrong for our camera geometry**
 - The problem was framing: the pupil sat in the top fifth of the image (y ≈ 80 of 400), under the upper eyelid.
   Re-aim so the pupil is centred while looking at the screen.
 
+### 5. Fitted radius varies between sessions; fixed, measured radius (2026-11-02)
+- The fitted radius ranged **53–218 px** across sessions on the same hardware. On 2026-11-02 it came out at
+  53 px, about the pupil's own diameter. At the baseline gaze that is 1.32° per pixel, against ~0.5° from
+  the geometry estimate.
+- **Effect:** noise read as 0.36°; the fixed 30 °/s I-VT threshold fired on jitter. There were 3.2 saccades/s
+  during the baseline fixation, 5.3/s overall, and 33% of frames were labelled saccade. Big reading
+  saccades fell outside the 53 px sphere, lost their angle, and were dropped.
+- **Check:** re-running detection with the radius fixed and nothing else changed:
+
+  | Radius | Noise | Baseline fixation | Reading | Frames labelled saccade |
+  |---|---|---|---|---|
+  | 53 (fitted) | 0.36° | 3.2/s | 3.8/s | 33% |
+  | 130 | 0.24° | 1.0/s | 2.9/s | 10% |
+  | 160 | 0.21° | 0.9/s | 2.8/s | 7% |
+  | 200 | 0.18° | 0.6/s | 2.6/s | 5% |
+
+- **Cause:** the radius comes from how far pupils sit from the fitted centre. With gaze confined to a
+  screen, the minor-axis lines are nearly parallel, so the centre and with it the radius are poorly
+  constrained.
+- **Changed:**
+  - `eye_model.radius_px` in the config fixes the radius; the centre is still fitted each session.
+  - A **dots** part in `eyetrack validate` (9 points, 2.5 s each) measures it. The radius is chosen so the
+    model's angles between fixations match the true angles between the dots, which needs
+    `screen.width_cm` and `distance_cm`. Only angles between pairs are compared, so the camera's tilt and
+    the resting gaze direction drop out. The centre is held at the session's fit, because that's the
+    centre the radius will be used with.
+  - `eyetrack process` warns when a radius is outside 1.5–6× the pupil diameter. The pupil turns about a
+    point ~10–12 mm behind it and is 2–8 mm across.
+- Not yet measured on real data. The dots step covers the "look around" item below only partly (9 directions).
+
 ## Planned
 1. **9-point screen calibration**, with 4–5 extra points held out to measure accuracy, repeated at the end for
    drift. Map pupil position to screen degrees with the existing polynomial mapper. This gives real degrees and

@@ -27,9 +27,25 @@ in a separate process.
 | `live_pupil.csv` | Per frame: `frame_index` (matches `eye_ts.csv`), `t_ns`, ellipse (`cx`, `cy`, axes, `angle`), `diameter_px`, `confidence`, `frame_brightness`, `eye_brightness`, `size_outlier`, `valid`, `blink_state`, `yaw_deg`/`pitch_deg` (only with an eye model), `speed`, `saccade_flag`, `queue_ms`, `proc_ms`, `latency_ms` |
 | `live_blinks.csv` | Blink / dropout / lighting / camera-gap events, with `known_at_s`: the time the live path knew the final kind |
 | `live_summary.json` | Frames processed and dropped, processing fps, latency percentiles, worker CPU (also copied into `meta.json` under `realtime`) |
+| `tracker_status.csv` | `t_ns`, `level`, `text` each time the on-screen tracker indicator changes |
 
 `live_pupil.csv` is flushed every 60 rows (about 0.5 s), and `live_blinks.csv` after every event, so a
 crash loses less than a second of results.
+
+## Tracker indicator
+
+While recording, a small dot and label in the bottom-right corner of the screen (the protocol screen in
+`eyetrack validate`, and the eye tile in `eyetrack record`) say whether tracking is still working, judged
+over the last 2 s (`realtime/status.py`):
+
+| Indicator | Meaning |
+|---|---|
+| green `TRACKING 95%` | at least 80% of frames valid, pupil inside the central 80% of the image, frame rate at least 80% of the set rate |
+| amber `WEAK`, `PUPIL NEAR EDGE`, `LOW FPS` | still tracking, but one of those checks fails: re-aim the camera, or check the cable |
+| red `PUPIL LOST`, `CAMERA DARK`, `NO FRAMES`, `VIDEO NOT SAVING` | under 30% valid, a black image, no frames for 0.5 s, or frames that no longer match the video file's size (the camera reconnected in another mode): stop and fix the setup |
+
+Changes are also printed in the terminal. The indicator is small so it barely changes screen brightness, but it
+does change colour; it needs the real-time worker (`realtime.enabled`).
 
 ## Live metrics and their latency
 

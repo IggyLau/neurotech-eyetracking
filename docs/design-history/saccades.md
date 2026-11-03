@@ -112,6 +112,10 @@ noise, so the realistic-noise numbers only apply once the IR filter and eye-mode
 The live (real-time) saccade flag is a simpler causal check. It matched only 14% of offline saccades on a noisy
 reading replay, so use it as a monitor; `saccades.csv` is the measurement.
 
+On 2026-11-02 saccades fired at 3–7/s in every part, including fixation. The cause was a 53 px fitted
+eye-model radius, not the detector; see [eye-model-and-gaze.md](eye-model-and-gaze.md) iteration 5. Detector
+settings are unchanged.
+
 ## Open questions
 - No hand-labelled saccades from our own camera yet. Labelling ~60 s of a recording would replace the Lund proxy.
 - Add a main-sequence plausibility check (duration and peak speed vs size).

@@ -11,9 +11,10 @@ Raw video is always kept, so recordings can be re-processed with different setti
 
 ## Features
 
-- **Capture:** threaded recording from one or two USB cameras, with per-frame timestamps on a shared clock and keyboard event markers
-- **Pupil detection:** dark-pupil ellipse fitting with a per-frame confidence score
-- **Eye model:** eyeball sphere fit, giving eye-rotation angles in degrees without calibration
+- **Capture:** threaded recording from one or two USB cameras, with per-frame timestamps on a shared clock and keyboard event markers. Manual exposure is set over USB, and a watchdog reopens the camera if its frame rate drops
+- **Pupil detection:** dark-pupil ellipse fitting with a per-frame confidence score. Optional search zone and edge penalty keep it off hair and the glasses frame
+- **Eye model:** eyeball sphere fit, giving eye-rotation angles in degrees without calibration. The eyeball radius can be measured once with on-screen targets and fixed in the config
+- **Guided validation:** `eyetrack validate` runs an on-screen protocol (fixation, targets, blinks, light flashes, reading, digit span) and reports what the build can measure
 - **Pupillometry:** blink removal, interpolation, smoothing and baseline correction
 - **Event detection:** velocity-threshold (I-VT) saccades and fixations, with noise-adaptive rejection of spurious saccades
 - **Blinks:** detected from pupil dropouts and told apart from glare and tracking loss
@@ -49,6 +50,7 @@ eyetrack realtime-bench data/<session>   # replay a recording through the live 1
 eyetrack process data/<session> --calibration data/<cal-session>/calibration.json --overlay
 eyetrack check data/<session>          # grade a recording against docs/validation_protocol.md
 eyetrack validate                    # guided: aim the camera, run the on-screen protocol, get a report
+eyetrack validate --only targets     # measure the eyeball radius (needs screen.width_cm in your config)
 eyetrack answer-test                 # check SPACE timing, microphone and spoken-number transcription
 ```
 
@@ -151,6 +153,20 @@ eyetrack benchmark lpw
 - **Area-of-interest metrics need a still head.** They use fixed scene-pixel rectangles, so they only make sense in screen tasks or with a stable head position.
 - **Refit after any headset movement.** The eyeball model and calibration assume the eye camera doesn't move relative to the head.
 
+## Known issues
+
+Found on the reference build during validation sessions in late October and early November 2026.
+
+- **Glare and screen reflections cause tracking loss.** Direct IR LEDs leave glare on the iris and dark edges that can be taken for the pupil, and a bright screen reflects on the cornea. Valid frames range from about 57% to 98% depending on the task. An 850 nm IR-pass filter and diffused LEDs are the planned fix ([docs/hardware.md](docs/hardware.md)).
+- **Large saccades are often missed while reading.** Tracking tends to drop out during the jump back to the start of a line. In one 45 s reading test, about 15 line changes were visible in the eye-position trace but only 6 were detected as single saccades.
+- **A fitted eyeball radius can be badly off.** Fits on the same hardware ranged from 53 to 218 px. A radius that is too small inflates gaze angles, saccade sizes and speeds, and the saccade count. Measure it with `eyetrack validate --only targets` and set `eye_model.radius_px`; the pipeline warns when a fitted radius looks implausible.
+- **Live saccade flags miss most small saccades.** Without an eye model, the real-time path uses a pixel threshold (`events.velocity_threshold_px`, 400 px/s), which is roughly 140–190 °/s at typical radii. In one session it flagged 159 saccades where offline processing found 1,962. Set `realtime.eye_model` to an earlier session folder to run the live path in degrees. Offline processing remains the reference.
+- **The live SACCADE label is hard to see.** It shows only on frames inside a saccade, about 20 ms.
+- **Reading fixations look short.** Medians of 111–198 ms against a typical 200–250 ms suggest noise is splitting fixations.
+- **The blink confidence threshold isn't validated on labelled blinks** from this camera. It was set from one cued-blink test.
+- **Mental-effort pupil responses aren't reliable yet.** Digit-span dilation goes in the expected direction but with too few trials, and lid, lashes and speech add noise.
+- **USB dropouts.** The camera can drop off the bus or fall back to auto exposure mid-recording. The watchdog recovers it, but frames in between are lost.
+
 ## Hardware
 
 See [docs/hardware.md](docs/hardware.md) for camera specs, IR illumination, eye safety and mounting.
@@ -159,16 +175,18 @@ See [docs/hardware.md](docs/hardware.md) for camera specs, IR illumination, eye 
 
 ```
 src/eyetrack/
-  capture/       camera access, frame-rate probe, recorder
+  capture/       camera access, USB camera controls, frame-rate probe, recorder
   pupil/         pupil detector and eyeball model
-  calibration/   calibration targets and pupil-to-scene mapping
+  calibration/   calibration targets, pupil-to-scene mapping, eyeball radius from targets
   metrics/       blinks, pupil size, saccades/fixations, areas of interest
-  benchmark/     scoring against labelled datasets
-  viz/           plots and overlay video
+  realtime/      live per-frame processing and tracker status
+  benchmark/     scoring against labelled datasets and other saccade detectors
+  viz/           plots, overlay video and session viewer
   pipeline.py    offline processing
+  protocol.py    guided validation protocol and report
   cli.py         `eyetrack` command-line interface
 config/          default settings
-docs/            hardware guide and benchmark results
+docs/            hardware guide, benchmarks, validation protocol; design-history/ explains past choices
 tests/           unit and integration tests on synthetic data
 ```
 

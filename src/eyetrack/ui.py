@@ -43,6 +43,8 @@ def command(action: str, mode: str, config_path: str | Path, **opt) -> list[str]
     base = [sys.executable, "-u", "-m", "eyetrack.cli", "--config", str(config_path)]
     if action == "preview":
         return base + ["preview", "--mode", mode]
+    if action == "dashboard":
+        return base + ["dashboard"] + ([] if opt.get("scan", True) else ["--no-scan"])
     if action == "record":
         args = base + ["record", "--mode", mode]
         if opt.get("name"):
@@ -95,10 +97,11 @@ def latest_calibration(root: str | Path) -> Path | None:
     return None
 
 
-def scan_cameras(max_index: int = 6) -> list[tuple[int, bytes | None, str]]:
-    """(index, PNG thumbnail or None, size text) for each camera index that opens."""
+def scan_cameras(max_index: int = 6) -> list[tuple[int, bytes | None, str, str]]:
+    """(index, PNG thumbnail or None, size text, kind) for each camera index that opens (kind: capture/dashboard.py)."""
     import cv2
     from .capture.camera import default_backend
+    from .capture.dashboard import classify
     found = []
     for i in range(max_index):
         cap = cv2.VideoCapture(i, default_backend())
@@ -112,13 +115,14 @@ def scan_cameras(max_index: int = 6) -> list[tuple[int, bytes | None, str]]:
                 break
             if ok:
                 img = f
-        size = f"{int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))}x{int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))}"
+        wh = (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
+        size = f"{wh[0]}x{wh[1]}"
         cap.release()
         png = None
         if img is not None:
             thumb = cv2.resize(img, (200, int(200 * img.shape[0] / img.shape[1])))
             png = cv2.imencode(".png", thumb)[1].tobytes()
-        found.append((i, png, size))
+        found.append((i, png, size, classify(img, wh)))
     return found
 
 
@@ -253,7 +257,7 @@ def run_ui(config_path: str | None = None):
             w.destroy()
         log("Scanning camera indices 0-5...\n")
         root.update()
-        for i, png, size in scan_cameras():
+        for i, png, size, kind in scan_cameras():
             f = ttk.Frame(thumbs)
             f.pack(side="left", padx=4)
             if png:
@@ -261,7 +265,8 @@ def run_ui(config_path: str | None = None):
                 lab = ttk.Label(f, image=img)
                 lab.image = img
                 lab.pack()
-            ttk.Label(f, text=f"index {i}  {size}" + ("" if png else "  (no frames)")).pack()
+            ttk.Label(f, text=f"index {i}  {size}" + ("" if png else "  (no frames)")
+                      + ("  NIR" if kind.startswith("nir") else "")).pack()
         log("Done. Set each camera's index to the matching picture.\n")
 
     def refresh_lists():
@@ -334,6 +339,8 @@ def run_ui(config_path: str | None = None):
         role_widgets[r] = (spin, lab)
     ttk.Button(box, text="Scan cameras (show a picture from each index)", command=do_scan).pack(fill="x", pady=4)
     ttk.Button(box, text="Live preview of this mode", command=lambda: run("preview")).pack(fill="x")
+    ttk.Button(box, text="Camera dashboard (finds the NIR eye cameras)",
+               command=lambda: run("dashboard")).pack(fill="x", pady=(4, 0))
 
     box = ttk.LabelFrame(left, text="3. Record", padding=8)
     box.pack(fill="x", pady=6)

@@ -23,6 +23,29 @@ two identical cameras apart by index, so after plugging them in, check which ind
 USB bandwidth: two 640x400 MJPG streams at 120 fps plus a 1280x720 MJPG scene stream at 30 fps fit on
 USB 2.0, but if a camera drops frames, put it on a different port or hub.
 
+## Camera dashboard
+
+```bash
+eyetrack dashboard
+```
+
+A live check that every camera works before recording. It opens each camera index briefly and takes the
+monochrome ones (the OV9281 sends three identical colour channels) as the NIR eye cameras, plus the configured
+scene camera. `--no-scan` uses the configured indices instead.
+
+Each panel has a status bar (green OK, amber weak, red failing) and shows:
+
+- frame rate against the requested rate, dropped frames, time since the last frame, image brightness
+  (all-black frames are flagged, as happens when the eye camera's exposure resets)
+- on the NIR cameras: the detected pupil, the search zone, a trail of recent pupil centres, the current
+  confidence, a 10 s confidence trace with the `pupil.min_confidence` line, the share of valid frames over the
+  last 2 s, and precision (RMS frame-to-frame movement of the pupil centre over 1 s, in eye-image pixels; hold
+  your gaze still to read it)
+
+Keys: `q` quit, `s` swap the two eye cameras, `r` reset the counters, `p` save a snapshot. A summary is printed
+on exit. Accuracy in degrees needs a calibration; the dashboard shows tracking quality (confidence, valid frames,
+precision), not gaze accuracy.
+
 ## The window
 
 ```bash
@@ -31,7 +54,8 @@ eyetrack ui
 
 1. Pick the camera mode.
 2. Set each camera's index. **Scan cameras** shows a picture from every index.
-3. **Live preview** shows every camera in the mode, with pupil detection on the eyes.
+3. **Live preview** shows every camera in the mode, with pupil detection on the eyes. **Camera dashboard**
+   opens the dashboard above.
 4. **Record**, **Calibrate** and **Process** run the commands below, with output in the log.
    After processing, the window shows `overlay_snapshot.png`: a scene frame with the gaze drawn on it.
 

@@ -17,6 +17,11 @@ from __future__ import annotations
 import ctypes
 import ctypes.util
 import struct
+import threading
+
+# Two camera threads (two eye cameras of one model) must not talk to the same devices at once: overlapping
+# control transfers failed and read back None (dashboard, 2026-11-07).
+_LOCK = threading.Lock()
 
 CAMERA_TERMINAL = {"ae_mode": (0x02, 1), "ae_priority": (0x03, 1), "exposure_abs": (0x04, 4),
                    "focus_auto": (0x08, 1)}   # focus_auto = external trigger mode on the U20CAM-9281M
@@ -138,13 +143,22 @@ class UVCControls:
 
 
 def _set_controls(c: UVCControls, uvc_cfg: dict) -> dict:
+    """Set only controls that differ from what the camera already has.
+
+    Writing a control mid-stream can make the camera stall briefly. With two eye cameras sharing a USB ID, each
+    camera's watchdog re-sent the settings to both, the other camera stalled, its watchdog fired, and the two kept
+    re-triggering each other (2026-11-07). Skipping unchanged values breaks that loop.
+    """
+    def put(name, value):
+        if c.get(name) != value:
+            c.set(name, value)
     if uvc_cfg.get("exposure_ms") is not None:
-        c.set("ae_mode", 1)
-        c.set("exposure_abs", round(float(uvc_cfg["exposure_ms"]) * 10))
+        put("ae_mode", 1)
+        put("exposure_abs", round(float(uvc_cfg["exposure_ms"]) * 10))
     elif uvc_cfg.get("auto_exposure"):
-        c.set("ae_mode", 8)
+        put("ae_mode", 8)
     if uvc_cfg.get("gain") is not None:
-        c.set("gain", int(uvc_cfg["gain"]))
+        put("gain", int(uvc_cfg["gain"]))
     return {name: c.get(name) for name in ("ae_mode", "exposure_abs", "gain", "focus_auto")}
 
 
@@ -154,6 +168,11 @@ def apply(uvc_cfg: dict) -> dict:
     Returns the values read back (for meta.json). With one camera that's the old flat dict; with several
     (two eye cameras of the same model) it's {"bus-port": values} per camera.
     """
+    with _LOCK:
+        return _apply_all(uvc_cfg)
+
+
+def _apply_all(uvc_cfg: dict) -> dict:
     vid, pid = int(uvc_cfg["vendor_id"]), int(uvc_cfg["product_id"])
     lib = _libusb()
     ctx = ctypes.c_void_p()

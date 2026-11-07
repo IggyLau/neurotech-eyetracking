@@ -43,6 +43,7 @@ On macOS, the terminal app needs camera access:
 
 ```bash
 eyetrack ui                          # window: pick 1, 2 or 3 camera mode, then preview, record, calibrate, process
+eyetrack dashboard                   # camera health: fps, drops, brightness; pupil and confidence on the NIR cameras
 eyetrack probe                       # list connected cameras
 eyetrack probe --index 0             # measure real frame rates for each mode of camera 0
 eyetrack live                        # live pupil detection and a 10 s pupil-size trace
@@ -66,6 +67,45 @@ Camera modes, the calibration board, parallax and the gaze outputs are described
 ```bash
 eyetrack process path/to/eye_video.mp4 --annotate
 ```
+
+### Camera dashboard: check the cameras and aim the eye cameras
+
+Run this before calibrating or recording, after mounting or moving an eye camera. On macOS, run it from
+Terminal.app so it can use the cameras.
+
+```bash
+cd neurotech-eyetracking
+source .venv/bin/activate
+eyetrack dashboard
+```
+
+It opens every camera index, takes the monochrome ones (the OV9281 IR eye cameras) as the eye cameras, and also
+shows the scene camera set in your config. Each camera gets a panel with a status bar: green is fine, amber is
+weak, red is failing. To skip the search and use the indices in your config, run `eyetrack dashboard --no-scan`.
+The same window opens from the **Camera dashboard** button in `eyetrack ui`.
+
+To place the eye cameras:
+
+1. Check that every panel is running. The frame rate should be close to the requested one (120 for the eye
+   cameras), dropped frames shouldn't keep climbing, and brightness shouldn't be near 0. All-black frames or
+   "DARK" mean the exposure was reset or the IR LEDs are off.
+2. Find out which panel is which eye by closing one eye. Press `s` if `eye` and `eye2` are the wrong way round.
+3. Look straight ahead at the middle of what you'll be looking at. Move and tilt the eye camera until the pupil
+   sits in the middle of the green box. The detector only accepts a pupil centred inside that box.
+4. Look at the corners of the area you'll use. The trail of recent pupil centres should stay inside the box, and
+   the pupil shouldn't disappear under the eyelid. A yellow ellipse means the detection passes
+   `pupil.min_confidence`; orange means it doesn't.
+5. Aim for:
+   - confidence above 0.8 when looking straight ahead
+   - "valid (2 s)" at 80% or more, which turns the status bar green
+   - precision of about 1 px or less while you hold your gaze still. Precision is how much the pupil centre
+     moves from frame to frame, in eye-image pixels.
+   If a glare spot breaks up the ellipse, change the LED angle or the camera angle.
+6. Press `r` to reset the counters after each adjustment, and `p` to save a snapshot to the output folder.
+   Press `q` to quit; a summary for each camera is printed.
+
+Then calibrate with `eyetrack calibrate` ([docs/scene-camera.md](docs/scene-camera.md)). The dashboard shows
+tracking quality, not gaze accuracy in degrees; that comes from the calibration.
 
 ### Recording markers
 

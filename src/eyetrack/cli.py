@@ -118,6 +118,11 @@ def cmd_preview(args, cfg):
     preview(cfg, args.mode)
 
 
+def cmd_dashboard(args, cfg):
+    from .capture.dashboard import run_dashboard
+    run_dashboard(cfg, use_scan=not args.no_scan)
+
+
 def cmd_board(args, cfg):
     from .calibration.board import write_board_pdf
     b = cfg["calibration"]["board"]
@@ -280,6 +285,12 @@ def main(argv=None):
     s = sub.add_parser("preview", help="live view of every camera in a mode, with pupil detection on the eyes")
     s.add_argument("--mode", choices=list(MODES), default="3")
     s.set_defaults(func=cmd_preview)
+
+    s = sub.add_parser("dashboard", help="live camera health: frame rate, drops, brightness; pupil, confidence "
+                                         "and precision on the NIR eye cameras")
+    s.add_argument("--no-scan", action="store_true",
+                   help="use the configured camera indices instead of finding the NIR cameras")
+    s.set_defaults(func=cmd_dashboard)
 
     s = sub.add_parser("board", help="write a printable calibration board (PDF) for `calibrate --board`")
     s.add_argument("--out", help="PDF path (default: <recording.output_dir>/calibration_board.pdf)")

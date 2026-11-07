@@ -11,10 +11,12 @@ them.
 | Blinks | Brightness-based blink vs dropout classifier | [blinks.md](blinks.md) |
 | Saccades and fixations | I-VT, 30 °/s, amplitude ≥ 3× noise, short-gap filling, 1-sample duration correction | [saccades.md](saccades.md) |
 | Eye model and gaze angles | Orthographic eyeball fit, once per session (known to be wrong; fix planned) | [eye-model-and-gaze.md](eye-model-and-gaze.md) |
+| Scene gaze | JEO tangent-plane calibration per eye on a printed board, polynomial alongside, two eyes averaged | [eye-model-and-gaze.md](eye-model-and-gaze.md) (7) |
 | Pupil size | Major axis, Kret & Sjak-Shie cleaning, marker epochs | [pupil-size.md](pupil-size.md) |
 | Validation session | `eyetrack validate`, SPACE-when-solved arithmetic with spoken answers | [validation-protocol.md](validation-protocol.md) |
 | Real-time processing | Worker thread on every frame, causal metrics, everything saved | [realtime.md](realtime.md) |
 | Hardware | OV9281 at 640×400 / 120 fps, 850 nm LEDs, wire + tape mount, 850 nm bandpass filter ordered | [hardware.md](hardware.md) |
+| Changes from JEOresearch | What our detector, eyeball model and scene calibration changed and added | [jeoresearch-changes.md](jeoresearch-changes.md) |
 
 Data behind the numbers:
 - **LPW**: hand-labelled pupil centres, head-mounted IR video.

@@ -1,8 +1,9 @@
 """Record raw eye + scene video with per-frame timestamps.
 
 Session layout (data/<session>/):
-    eye.avi, eye_ts.csv        frame_index, t_ns
-    scene.avi, scene_ts.csv
+    eye.avi, eye_ts.csv        frame_index, t_ns   (the left eye in two-eye mode)
+    eye2.avi, eye2_ts.csv      second eye camera (two-eye modes only)
+    scene.avi, scene_ts.csv    forward-facing camera
     markers.csv                t_ns, label   (keys pressed during recording)
     meta.json                  config + actual camera settings
     live_pupil.csv             real-time per-frame results (realtime.enabled; see realtime/worker.py)
@@ -40,6 +41,25 @@ MARKER_KEYS = {
     ord("b"): "blink_cue", ord("m"): "marker",
     ord(" "): "solved",          # arithmetic: pressed the moment a problem is solved
 }
+# Camera modes: which cameras a recording uses. Every stream is stamped on the same clock (camera.py).
+MODES = {
+    "1": ("eye",),                      # one eye camera
+    "2": ("eye", "scene"),              # one eye + scene camera
+    "2eyes": ("eye", "eye2"),           # both eyes, no scene camera
+    "3": ("eye", "eye2", "scene"),      # both eyes + scene camera
+}
+MODE_NAMES = {"1": "1 camera: eye", "2": "2 cameras: eye + scene", "2eyes": "2 cameras: both eyes",
+              "3": "3 cameras: both eyes + scene"}
+
+
+def mode_roles(mode: str | None, use_scene: bool = True) -> tuple[str, ...]:
+    if mode is None:
+        return MODES["2"] if use_scene else MODES["1"]
+    if mode not in MODES:
+        raise ValueError(f"Unknown camera mode {mode!r}; choose one of {', '.join(MODES)}")
+    return MODES[mode]
+
+
 # A held key auto-repeats every ~0.1 s; presses of the same key closer than this count once.
 KEY_DEBOUNCE_S = 1.0
 
@@ -86,7 +106,7 @@ def new_session_dir(root: str | Path, name: str | None = None) -> Path:
 def record(cfg: dict, name: str | None = None, duration: float | None = None,
            use_scene: bool = True, preview: bool = True, display=None, realtime: bool | None = None,
            cameras: dict | None = None, eye_model=None, backend: str | None = None,
-           block_when_full: bool = False, write_video: bool = True) -> Path:
+           block_when_full: bool = False, write_video: bool = True, mode: str | None = None) -> Path:
     """Record until q / duration / display finishes (or a replayed video ends).
 
     display: optional object with .frame(elapsed_s) -> (image, label) | None, shown
@@ -96,15 +116,22 @@ def record(cfg: dict, name: str | None = None, duration: float | None = None,
     (default: config realtime.enabled). cameras: {"eye": ..., "scene": ...} sources to use instead
     of opening the configured cameras (e.g. realtime.replay.ReplayCamera). block_when_full: make the
     eye source wait for the worker instead of dropping (as-fast-as-possible replays only).
+    mode: camera mode from MODES ("1", "2", "2eyes", "3"); default is eye (+ scene if use_scene).
+    The real-time worker runs on the first eye camera; a second eye gets preview-only detection.
     """
     session = new_session_dir(cfg["recording"]["output_dir"], name)
     rec = cfg["recording"]
     if cameras is not None:
         cams = dict(cameras)
     else:
-        cams = {"eye": Camera.from_config(cfg["eye_camera"], "eye")}
-        if use_scene:
-            cams["scene"] = Camera.from_config(cfg["scene_camera"], "scene")
+        cams = {}
+        try:
+            for role in mode_roles(mode, use_scene):
+                cams[role] = Camera.from_config(cfg[f"{role}_camera"], role)
+        except Exception:
+            for c in cams.values():
+                c.cap.release()
+            raise
 
     if realtime is None:
         realtime = cfg.get("realtime", {}).get("enabled", False)
@@ -122,7 +149,7 @@ def record(cfg: dict, name: str | None = None, duration: float | None = None,
         fps = cfg[f"{key}_camera"]["fps"]
         if write_video:
             writers[key] = StreamWriter(session / f"{key}.avi", session / f"{key}_ts.csv",
-                                        rec[f"{key}_codec"], fps)
+                                        rec.get(f"{key}_codec", rec["eye_codec"]), fps)
         write = writers[key].write if write_video else None
         if key == "eye" and proc is not None:
             def on_eye(frame, write=write):
@@ -139,11 +166,14 @@ def record(cfg: dict, name: str | None = None, duration: float | None = None,
 
     meta = {
         "created": datetime.now().isoformat(timespec="seconds"),
+        "mode": next((m for m, r in MODES.items() if r == tuple(cams)), None),
         "platform": platform.platform(),
         "clock": "time.perf_counter_ns",
         "config": cfg,
         "cameras": {k: c.actual for k, c in cams.items()},
     }
+    if display is not None and getattr(display, "meta", None):
+        meta["calibration"] = display.meta      # which marker each calibration target is (calibration/board.py)
 
     # Without the real-time worker: preview-only pupil detection on the main thread, on the newest
     # frame at preview rate. With it, the preview just shows the worker's latest result.
@@ -151,6 +181,7 @@ def record(cfg: dict, name: str | None = None, duration: float | None = None,
     trace = PupilTrace(min_confidence=cfg["pupil"]["min_confidence"],
                        baseline_s=cfg["pupil_size"]["baseline_ms"] / 1000)
     last_eye_index, eye_vis = -1, None
+    eye2_state = {"index": -1, "vis": None}     # preview-only detection on the second eye camera
     mirror = cfg["eye_camera"].get("mirror_preview", False)
     if mirror and params.search_zone:       # preview detection runs on the mirrored image
         x0, y0, x1, y1 = params.search_zone
@@ -239,6 +270,13 @@ def record(cfg: dict, name: str | None = None, duration: float | None = None,
                             trace.add(f.t_ns / 1e9, r)
                             eye_vis = draw_result(img, r)
                         src = eye_vis
+                    elif k == "eye2":
+                        if f.index != eye2_state["index"]:
+                            eye2_state["index"] = f.index
+                            m2 = cfg["eye2_camera"].get("mirror_preview", False)
+                            img = cv2.flip(f.image, 1) if m2 else f.image
+                            eye2_state["vis"] = draw_result(img, detect_pupil(img, DetectorParams.from_config(cfg["pupil"])))
+                        src = eye2_state["vis"]
                     else:
                         src = f.image
                     img = cv2.resize(src, (480, int(480 * src.shape[0] / src.shape[1])))

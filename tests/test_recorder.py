@@ -44,3 +44,26 @@ def test_draw_inset_puts_the_eye_view_bottom_right():
     assert out.shape == (900, 1440, 3)
     assert out[880 - 10, 1420 - 10].max() == 0          # inside the inset (black eye image)
     assert out[100, 100].tolist() == [128, 128, 128]    # rest of the screen unchanged
+
+
+def test_three_camera_mode_records_both_eyes_and_scene(tmp_path):
+    cfg = load_config()
+    cfg["eye_camera"]["index"] = _video(tmp_path / "fake_eye.avi")
+    cfg["eye2_camera"]["index"] = _video(tmp_path / "fake_eye2.avi")
+    cfg["scene_camera"]["index"] = _video(tmp_path / "fake_scene.avi", size=(640, 480))
+    cfg["recording"]["output_dir"] = str(tmp_path / "data")
+    session = record(cfg, name="three", duration=1.0, preview=False, realtime=False, mode="3")
+    for f in ["eye.avi", "eye2.avi", "scene.avi", "eye2_ts.csv"]:
+        assert (session / f).exists(), f
+    meta = json.loads((session / "meta.json").read_text())
+    assert meta["mode"] == "3" and set(meta["frames"]) == {"eye", "eye2", "scene"}
+
+
+def test_mode_roles():
+    import pytest
+    from eyetrack.capture.recorder import mode_roles
+    assert mode_roles("1") == ("eye",)
+    assert mode_roles("2eyes") == ("eye", "eye2")
+    assert mode_roles(None, use_scene=False) == ("eye",)
+    with pytest.raises(ValueError):
+        mode_roles("4")

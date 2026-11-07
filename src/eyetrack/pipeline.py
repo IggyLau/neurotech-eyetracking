@@ -9,7 +9,9 @@ import cv2
 import numpy as np
 import pandas as pd
 
-from .calibration.mapping import (PolyMapper, detect_marker_track, target_points, validation_error)
+from .calibration.mapping import PolyMapper, detect_all_markers, poly_features, target_points
+from .calibration.scene import (Calibration, JeoMapper, align_samples, camera_angular_error_degrees,
+                                combine_eyes)
 from .metrics import aoi as aoi_mod
 from .metrics import blinks as blinks_mod
 from .metrics import events as events_mod
@@ -20,17 +22,26 @@ from .pupil.eye_model import EyeModel, fallback_model, radius_warning
 
 # ---------------------------------------------------------------- inputs
 
-def resolve_inputs(path: str | Path) -> dict:
-    """Accept a session folder (eye.avi + eye_ts.csv ...) or a bare video file."""
+def resolve_inputs(path: str | Path, eye: str = "eye") -> dict:
+    """Accept a session folder (eye.avi + eye_ts.csv ...) or a bare video file.
+
+    eye="eye2" points the eye video at the second eye camera (eye2.avi) and writes results to <session>/eye2/.
+    """
     path = Path(path)
     if path.is_dir():
-        return {"dir": path, "eye_video": path / "eye.avi", "eye_ts": path / "eye_ts.csv",
-                "scene_video": path / "scene.avi", "scene_ts": path / "scene_ts.csv",
-                "markers": path / "markers.csv"}
+        inp = {"dir": path, "session": path, "role": eye,
+               "eye_video": path / "eye.avi", "eye_ts": path / "eye_ts.csv",
+               "eye2_video": path / "eye2.avi", "eye2_ts": path / "eye2_ts.csv",
+               "scene_video": path / "scene.avi", "scene_ts": path / "scene_ts.csv",
+               "markers": path / "markers.csv"}
+        if eye == "eye2":
+            inp.update(dir=path / "eye2", eye_video=path / "eye2.avi", eye_ts=path / "eye2_ts.csv")
+            inp["dir"].mkdir(exist_ok=True)
+        return inp
     out_dir = path.parent / f"{path.stem}_processed"
     out_dir.mkdir(exist_ok=True)
-    return {"dir": out_dir, "eye_video": path, "eye_ts": None, "scene_video": None,
-            "scene_ts": None, "markers": None}
+    return {"dir": out_dir, "session": out_dir, "role": "eye", "eye_video": path, "eye_ts": None,
+            "eye2_video": None, "eye2_ts": None, "scene_video": None, "scene_ts": None, "markers": None}
 
 
 def load_timestamps(ts_path: Path | None, n_frames: int, fps: float) -> tuple[np.ndarray, int]:
@@ -141,13 +152,41 @@ def load_scene_times(inp: dict, t0_ns: int) -> np.ndarray | None:
     return (pd.read_csv(p).t_ns.to_numpy(np.int64) - t0_ns) / 1e9
 
 
+def fit_eye_model(ellipses: list, pupil: pd.DataFrame, good: np.ndarray, em_cfg: dict) -> tuple[EyeModel, str | None]:
+    """Eyeball model for one eye, with the configured fixed radius or the implausible-radius fallback.
+
+    Raises ValueError when there are too few usable ellipses.
+    """
+    eye_model = EyeModel.fit(ellipses, pupil.confidence.to_numpy(), radius=em_cfg.get("radius_px"))
+    pupil_d = float(pupil.axis_major[good].median())
+    warning = radius_warning(eye_model.radius, pupil_d, tuple(em_cfg.get("plausible_radius", (1.5, 6.0))))
+    if warning and eye_model.radius_source == "fitted" and em_cfg.get("fallback_ratio"):
+        eye_model = fallback_model(eye_model, pupil_d, em_cfg["fallback_ratio"],
+                                   pupil.cx[good].to_numpy(), pupil.cy[good].to_numpy())
+        warning += (f" Using {eye_model.radius:.0f} px instead ({em_cfg['fallback_ratio']} x the pupil "
+                    "diameter); sizes and speeds in degrees are approximate.")
+    return eye_model, warning
+
+
+def first_t_ns(ts_path) -> int | None:
+    if ts_path and Path(ts_path).exists():
+        ts = pd.read_csv(ts_path, nrows=1)
+        return int(ts.t_ns.iloc[0]) if len(ts) else None
+    return None
+
+
 # ---------------------------------------------------------------- main entry
 
 def process(path: str | Path, cfg: dict, calibration: str | Path | None = None,
             aois: dict | None = None, annotate: bool = False, overlay: bool = False,
-            max_frames: int | None = None) -> dict:
-    inp = resolve_inputs(path)
+            max_frames: int | None = None, eye: str = "eye") -> dict:
+    """Process one session. With a second eye camera (eye2.avi) that eye is processed first, into
+    <session>/eye2/, and its gaze is combined with the first eye's when a calibration is given."""
+    inp = resolve_inputs(path, eye)
     out = inp["dir"]
+    if eye == "eye" and inp["eye2_video"] and Path(inp["eye2_video"]).exists():
+        print("Second eye camera found: processing eye2.avi first")
+        process(path, cfg, None, None, annotate, False, max_frames, eye="eye2")
     print(f"Processing {inp['eye_video']}")
 
     pupil, ellipses, t0_ns = run_pupil_stage(inp, cfg, annotate, max_frames)
@@ -186,14 +225,7 @@ def process(path: str | Path, cfg: dict, calibration: str | Path | None = None,
     eye_model, eye_model_warning = None, None
     em_cfg = cfg.get("eye_model") or {}
     try:
-        eye_model = EyeModel.fit(ellipses, pupil.confidence.to_numpy(), radius=em_cfg.get("radius_px"))
-        pupil_d = float(pupil.axis_major[good].median())
-        eye_model_warning = radius_warning(eye_model.radius, pupil_d, tuple(em_cfg.get("plausible_radius", (1.5, 6.0))))
-        if eye_model_warning and eye_model.radius_source == "fitted" and em_cfg.get("fallback_ratio"):
-            eye_model = fallback_model(eye_model, pupil_d, em_cfg["fallback_ratio"],
-                                       pupil.cx[good].to_numpy(), pupil.cy[good].to_numpy())
-            eye_model_warning += (f" Using {eye_model.radius:.0f} px instead ({em_cfg['fallback_ratio']} x the pupil "
-                                  "diameter); sizes and speeds in degrees are approximate.")
+        eye_model, eye_model_warning = fit_eye_model(ellipses, pupil, good, em_cfg)
         if eye_model_warning:
             print(f"  WARNING: {eye_model_warning}")
         yaw, pitch = eye_model.angles_deg(pupil.cx.to_numpy(), pupil.cy.to_numpy())
@@ -227,22 +259,21 @@ def process(path: str | Path, cfg: dict, calibration: str | Path | None = None,
         t, pupil.diameter_clean_px.to_numpy(), markers, pcfg.get("epoch_labels", []),
         pcfg["baseline_ms"], pcfg.get("epoch_max_s", 30), tuple(pcfg.get("epoch_end_ignore", [])))
 
-    # gaze in scene coordinates
+    # gaze in scene coordinates (both eyes combined when there are two)
     gaze = None
     scene_t = load_scene_times(inp, t0_ns)
-    if calibration:
-        mapper = PolyMapper.load(calibration)
-        gx, gy = mapper.predict(pupil.cx, pupil.cy)
-        gaze = pd.DataFrame({"t_s": t, "gaze_x": np.where(good, gx, np.nan), "gaze_y": np.where(good, gy, np.nan)})
+    if calibration and eye == "eye":
+        cal = Calibration.load(calibration)
+        gaze = scene_gaze(cal, inp, pupil, good, t0_ns, cfg["calibration"].get("method"))
         if scene_t is not None:
             gaze["scene_frame"] = np.clip(np.searchsorted(scene_t, t), 0, len(scene_t) - 1)
         gaze.to_csv(out / "gaze.csv", index=False)
         # fixation positions in scene px for AOIs / heatmap
-        fx_x, fx_y = mapper.predict(*_fixation_pupil_xy(pupil, fixations))
-        fixations["scene_x"], fixations["scene_y"] = fx_x, fx_y
+        fixations["scene_x"], fixations["scene_y"] = _fixation_scene_xy(gaze, fixations)
 
     summary = {
         "source": str(inp["eye_video"]),
+        "eye": eye,
         "frames": int(len(pupil)),
         "duration_s": duration,
         "sample_rate_hz": float(fs),
@@ -285,21 +316,84 @@ def process(path: str | Path, cfg: dict, calibration: str | Path | None = None,
     plots.epochs_report(epochs, out / "pupil_epochs.png")
     if gaze is not None and inp["scene_video"] and Path(inp["scene_video"]).exists():
         plots.scene_heatmap(inp["scene_video"], fixations, out / "heatmap.png")
+        eyes = overlay_eyes(inp, pupil, eye_model, cal, t0_ns)
+        snap = plots.gaze_overlay_snapshot(inp["scene_video"], gaze, out / "overlay_snapshot.png", eyes)
+        if snap:
+            summary["overlay_snapshot"] = str(snap)
         if overlay:
-            plots.gaze_overlay_video(inp["scene_video"], gaze, out / "overlay.mp4")
+            plots.gaze_overlay_video(inp["scene_video"], gaze, out / "overlay.mp4", eyes)
 
     print(f"  wrote results to {out}")
     _print_summary(summary)
     return summary
 
 
-def _fixation_pupil_xy(pupil: pd.DataFrame, fixations: pd.DataFrame):
+def _fixation_scene_xy(gaze: pd.DataFrame, fixations: pd.DataFrame):
     xs, ys = [], []
     for f in fixations.itertuples():
-        sel = (pupil.t_s >= f.onset_s) & (pupil.t_s <= f.offset_s) & pupil.valid
-        xs.append(pupil.cx[sel].mean())
-        ys.append(pupil.cy[sel].mean())
-    return np.array(xs), np.array(ys)
+        sel = (gaze.t_s >= f.onset_s) & (gaze.t_s <= f.offset_s)
+        xs.append(gaze.gaze_x[sel].median() if sel.any() else np.nan)
+        ys.append(gaze.gaze_y[sel].median() if sel.any() else np.nan)
+    return np.array(xs, float), np.array(ys, float)
+
+
+def _second_eye(inp: dict, t0_ns: int) -> pd.DataFrame | None:
+    """The second eye's processed pupil.csv, with t_s moved onto the first eye's clock."""
+    p = Path(inp["session"]) / "eye2" / "pupil.csv"
+    t0_2 = first_t_ns(inp.get("eye2_ts"))
+    if not p.exists() or t0_2 is None:
+        return None
+    p2 = pd.read_csv(p)
+    p2["t_s"] = p2.t_s + (t0_2 - t0_ns) / 1e9
+    return p2
+
+
+def scene_gaze(cal: Calibration, inp: dict, pupil: pd.DataFrame, good: np.ndarray, t0_ns: int,
+               method: str | None = None) -> pd.DataFrame:
+    """Gaze in scene-camera px per frame of the first eye: each eye's point, and the two combined."""
+    t = pupil.t_s.to_numpy()
+    g1 = np.stack(cal.predict("eye", pupil.cx.to_numpy(), pupil.cy.to_numpy(), method), axis=1)
+    g1[~good] = np.nan
+    gaze = pd.DataFrame({"t_s": t})
+    combined = g1
+    p2 = _second_eye(inp, t0_ns) if "eye2" in cal.eyes else None
+    if p2 is not None:
+        good2 = (p2.valid & ~p2.in_blink).to_numpy()
+        g2 = np.stack(cal.predict("eye2", p2.cx.to_numpy(), p2.cy.to_numpy(), method), axis=1)
+        g2[~good2] = np.nan
+        dt = float(np.median(np.diff(p2.t_s))) if len(p2) > 1 else 0.01
+        g2 = align_samples(p2.t_s.to_numpy(), g2, t, max_dt=1.5 * dt)
+        combined = combine_eyes(g1, g2)
+        gaze["gaze_eye2_x"], gaze["gaze_eye2_y"] = g2[:, 0], g2[:, 1]
+    gaze.insert(1, "gaze_x", combined[:, 0])
+    gaze.insert(2, "gaze_y", combined[:, 1])
+    gaze.insert(3, "gaze_eye_x", g1[:, 0])
+    gaze.insert(4, "gaze_eye_y", g1[:, 1])
+    return gaze
+
+
+def overlay_eyes(inp: dict, pupil: pd.DataFrame, eye_model, cal: Calibration, t0_ns: int) -> list[dict]:
+    """Eye videos, pupil tracks and eyeball models for the eye insets (gaze rays) on the scene overlay."""
+    eyes = []
+    for role in ("eye", "eye2"):
+        video = inp.get(f"{role}_video")
+        if not video or not Path(video).exists():
+            continue
+        jeo = (cal.eyes.get(role) or {}).get("jeo") if cal else None
+        if role == "eye":
+            track, model = pupil, eye_model
+        else:
+            track = _second_eye(inp, t0_ns)
+            model = None
+            summary = Path(inp["session"]) / "eye2" / "metrics_summary.json"
+            if summary.exists():
+                em = json.loads(summary.read_text()).get("eye_model")
+                if em:
+                    model = EyeModel(em["cx"], em["cy"], em["radius"], radius_source=em.get("radius_source", "fitted"))
+            if track is None:
+                continue
+        eyes.append({"role": role, "video": video, "pupil": track, "eye_model": jeo.eye_model if jeo else model})
+    return eyes
 
 
 def _json_default(o):
@@ -324,36 +418,134 @@ def _print_summary(s: dict):
 
 # ---------------------------------------------------------------- calibration
 
-def calibrate_from_session(session: str | Path, cfg: dict) -> dict:
-    """Fit pupil->scene mapping from a session recorded with `eyetrack calibrate`."""
+def _target_errors(pts: pd.DataFrame, gx, gy, size, dfov) -> pd.DataFrame:
+    out = pts[["label", "scene_x", "scene_y"]].copy()
+    out["gaze_x"], out["gaze_y"] = gx, gy
+    out["error_px"] = np.hypot(out.gaze_x - out.scene_x, out.gaze_y - out.scene_y)
+    out["error_deg"] = [camera_angular_error_degrees((a, b), (c, d), size, dfov) if np.isfinite([c, d]).all()
+                        else np.nan for a, b, c, d in out[["scene_x", "scene_y", "gaze_x", "gaze_y"]].to_numpy()]
+    return out
+
+
+def calibrate_from_session(session: str | Path, cfg: dict, check_with: str | Path | None = None) -> dict:
+    """Fit gaze -> scene mappings for every eye camera in a session recorded with `eyetrack calibrate`.
+
+    Works for on-screen targets (one marker that moves) and the printed board (one marker per target; the
+    session's meta.json says which). Both mappings (jeo, poly) are fitted per eye and their errors reported,
+    for the calibration targets and the held-out accuracy targets, per eye and with both eyes combined.
+    check_with: an existing calibration.json to score on this session instead of fitting a new one (e.g. the
+    half-size board at half the distance, to measure parallax). Every target then counts as held out.
+    """
     inp = resolve_inputs(session)
     out = inp["dir"]
-    pupil, _, t0_ns = run_pupil_stage(inp, cfg)
-    markers = load_markers(inp, t0_ns)
-    scene_t = load_scene_times(inp, t0_ns)
-    track = detect_marker_track(inp["scene_video"], cfg["calibration"]["aruco_dict"])
-    track["t_s"] = scene_t[:len(track)]
+    meta_path = out / "meta.json"
+    meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+    marker_for_label = (meta.get("calibration") or {}).get("marker_for_label")
+    ccfg = cfg["calibration"]
+    settle = ccfg.get("settle_s", 0.6)
 
-    cal = target_points(markers, pupil, track, "cal")
-    val = target_points(markers, pupil, track, "val")
-    cal.to_csv(out / "calibration_points.csv", index=False)
-    if len(cal) < 6:
-        raise RuntimeError(f"Only {len(cal)} usable calibration targets (need 6+). Check that the scene "
-                           "camera sees the marker and the pupil is detected; see calibration_points.csv.")
-    mapper = PolyMapper.fit(cal[["pupil_x", "pupil_y"]].to_numpy(), cal[["scene_x", "scene_y"]].to_numpy(),
-                            cfg["calibration"]["poly_degree"])
-    mapper.save(out / "calibration.json")
+    cap = cv2.VideoCapture(str(inp["scene_video"]))
+    size = (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
+    cap.release()
+    dfov = cfg["scene_camera"].get("diagonal_fov_deg")
+    track = detect_all_markers(inp["scene_video"], ccfg["aruco_dict"])
+    existing = Calibration.load(check_with) if check_with else None
+    cal = Calibration(method=ccfg.get("method", "jeo"), scene_size=size, diagonal_fov_deg=dfov)
 
-    scene_w = cfg["scene_camera"]["width"]
-    hfov = cfg["calibration"]["scene_hfov_deg"]
-    result = {"calibration_targets": len(cal), "calibration_file": str(out / "calibration.json")}
-    fit_err = validation_error(mapper, cal, scene_w, hfov)
-    result["fit_error_deg_mean"] = float(fit_err.error_deg.mean())
-    if len(val):
-        v = validation_error(mapper, val, scene_w, hfov)
-        v.to_csv(out / "validation.csv", index=False)
-        result.update({"validation_targets": len(v), "validation_error_deg_mean": float(v.error_deg.mean()),
-                       "validation_error_px_mean": float(v.error_px.mean())})
-    (out / "calibration_summary.json").write_text(json.dumps(result, indent=2))
-    print(json.dumps(result, indent=2))
+    roles = [r for r in ("eye", "eye2") if inp.get(f"{r}_video") and Path(inp[f"{r}_video"]).exists()]
+    points, errors, result = {}, [], {"scene_size": list(size), "diagonal_fov_deg": dfov, "eyes": {}}
+    n_terms = poly_features(np.zeros(1), np.zeros(1), ccfg["poly_degree"]).shape[1]
+    for role in roles:
+        rinp = resolve_inputs(session, role)
+        pupil, ellipses, t0_ns = run_pupil_stage(rinp, cfg)
+        markers = load_markers(rinp, t0_ns)
+        scene_t = load_scene_times(rinp, t0_ns)
+        tr = track.copy()
+        tr["t_s"] = scene_t[np.clip(tr.frame_index.to_numpy(), 0, len(scene_t) - 1)] if len(tr) else []
+        cal_pts = target_points(markers, pupil, tr, "cal", settle, marker_for_label=marker_for_label)
+        val_pts = target_points(markers, pupil, tr, "val", settle, marker_for_label=marker_for_label)
+        cal_pts.to_csv(rinp["dir"] / "calibration_points.csv", index=False)
+        points[role] = (cal_pts, val_pts)
+        info = {"calibration_targets": len(cal_pts), "accuracy_targets": len(val_pts)}
+
+        if existing is not None:
+            maps = existing.eyes.get(role) or {}
+        else:
+            maps = {"poly": None, "jeo": None}
+            pxy, sxy = cal_pts[["pupil_x", "pupil_y"]].to_numpy(), cal_pts[["scene_x", "scene_y"]].to_numpy()
+            if len(cal_pts) >= n_terms:
+                maps["poly"] = PolyMapper.fit(pxy, sxy, ccfg["poly_degree"])
+            else:
+                info["poly_error"] = f"only {len(cal_pts)} targets, need {n_terms}"
+            try:
+                good = pupil.valid.to_numpy()
+                model, warning = fit_eye_model(ellipses, pupil, good, cfg.get("eye_model") or {})
+                if warning:
+                    info["eye_model_warning"] = warning
+                maps["jeo"] = JeoMapper.fit(model, pxy, sxy)
+                info["jeo_fit_rms_px"] = maps["jeo"].rms_px
+            except ValueError as e:
+                info["jeo_error"] = str(e)
+            cal.eyes[role] = maps
+        for method, m in maps.items():
+            if m is None:
+                continue
+            for kind, pts in (("calibration", cal_pts), ("accuracy", val_pts)):
+                if existing is not None:
+                    kind, pts = "accuracy", pd.concat([cal_pts, val_pts], ignore_index=True)
+                if not len(pts):
+                    continue
+                e = _target_errors(pts, *m.predict(pts.pupil_x.to_numpy(), pts.pupil_y.to_numpy()), size, dfov)
+                e.insert(0, "role", role)
+                e.insert(1, "method", method)
+                e.insert(2, "kind", kind)
+                errors.append(e)
+                if existing is not None:
+                    break
+        result["eyes"][role] = info
+
+    if not cal.eyes and existing is None:
+        raise RuntimeError("No eye video in this session.")
+    err = pd.concat(errors, ignore_index=True) if errors else pd.DataFrame()
+    # both eyes combined: average the two eyes' predicted points per target (EyeTrackerStereo.cs)
+    if len(roles) == 2 and len(err):
+        for (method, kind), g in err.groupby(["method", "kind"]):
+            a, b = g[g.role == "eye"].set_index("label"), g[g.role == "eye2"].set_index("label")
+            both = a.index.intersection(b.index)
+            if not len(both):
+                continue
+            pts = a.loc[both, ["scene_x", "scene_y"]].reset_index()
+            c = combine_eyes(a.loc[both, ["gaze_x", "gaze_y"]].to_numpy(), b.loc[both, ["gaze_x", "gaze_y"]].to_numpy())
+            e = _target_errors(pts, c[:, 0], c[:, 1], size, dfov)
+            e.insert(0, "role", "both")
+            e.insert(1, "method", method)
+            e.insert(2, "kind", kind)
+            err = pd.concat([err, e], ignore_index=True)
+    if len(err):
+        err.to_csv(out / ("check_errors.csv" if existing is not None else "calibration_errors.csv"), index=False)
+        table = (err.groupby(["role", "method", "kind"])[["error_deg", "error_px"]].mean().round(2)
+                 .reset_index().to_dict(orient="records"))
+        result["mean_errors"] = table
+    if existing is None:
+        cal.save(out / "calibration.json")
+        result["calibration_file"] = str(out / "calibration.json")
+        result["method_used_by_process"] = cal.method
+    else:
+        result["checked_calibration"] = str(check_with)
+    (out / ("check_summary.json" if existing is not None else "calibration_summary.json")).write_text(
+        json.dumps(result, indent=2, default=_json_default))
+    _print_calibration(result)
     return result
+
+
+def _print_calibration(r: dict):
+    for role, info in r["eyes"].items():
+        print(f"  {role}: {info['calibration_targets']} calibration targets, {info['accuracy_targets']} accuracy targets"
+              + "".join(f"; {k}: {v}" for k, v in info.items() if k.endswith(("error", "warning"))))
+    if r.get("mean_errors"):
+        print(f"  mean error (deg uses a {r['diagonal_fov_deg'] or 60:g} deg diagonal field of view):")
+        for row in r["mean_errors"]:
+            print(f"    {row['role']:5s} {row['method']:5s} {row['kind']:12s} {row['error_deg']:6.2f} deg "
+                  f"{row['error_px']:7.1f} px")
+    if r.get("calibration_file"):
+        print(f"  saved {r['calibration_file']} (process uses: {r['method_used_by_process']})")

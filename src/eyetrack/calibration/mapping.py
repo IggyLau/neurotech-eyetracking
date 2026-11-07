@@ -86,11 +86,37 @@ def detect_marker_track(scene_video: str | Path, dict_name: str = "DICT_4X4_50",
     return pd.DataFrame(rows)
 
 
+def detect_all_markers(scene_video: str | Path, dict_name: str = "DICT_4X4_50") -> pd.DataFrame:
+    """Centre of every ArUco marker in every scene frame: frame_index, marker_id, marker_x, marker_y.
+
+    Used for the printed calibration board, where each target is its own marker. Finding the markers in every
+    frame (not once in a photo) keeps the targets right when the head moves during calibration.
+    """
+    detector = cv2.aruco.ArucoDetector(get_dictionary(dict_name), cv2.aruco.DetectorParameters())
+    cap = cv2.VideoCapture(str(scene_video))
+    rows, i = [], 0
+    while True:
+        ok, img = cap.read()
+        if not ok:
+            break
+        corners, ids, _ = detector.detectMarkers(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY))
+        if ids is not None:
+            for c, mid in zip(corners, ids.ravel()):
+                x, y = c[0].mean(axis=0)
+                rows.append({"frame_index": i, "marker_id": int(mid), "marker_x": float(x), "marker_y": float(y)})
+        i += 1
+    cap.release()
+    return pd.DataFrame(rows, columns=["frame_index", "marker_id", "marker_x", "marker_y"])
+
+
 def target_points(markers: pd.DataFrame, pupil: pd.DataFrame, scene: pd.DataFrame, prefix: str,
-                  settle_s: float = 0.6, end_trim_s: float = 0.2) -> pd.DataFrame:
+                  settle_s: float = 0.6, end_trim_s: float = 0.2,
+                  marker_for_label: dict | None = None) -> pd.DataFrame:
     """One robust (pupil, scene) pair per target: medians over the settled part of each dwell.
 
-    markers: t_s, label     pupil: t_s, cx, cy, valid     scene: t_s, marker_x, marker_y
+    markers: t_s, label     pupil: t_s, cx, cy, valid
+    scene: t_s, marker_x, marker_y (one marker per frame), or with a marker_id column (several markers per
+    frame) plus marker_for_label {label: marker_id} saying which marker each target is.
     """
     m = markers[markers.label.str.startswith(prefix + "_")].sort_values("t_s").reset_index(drop=True)
     ends = list(m.t_s.iloc[1:]) + [m.t_s.iloc[-1] + (m.t_s.diff().median() if len(m) > 1 else 2.0)] if len(m) else []
@@ -98,7 +124,10 @@ def target_points(markers: pd.DataFrame, pupil: pd.DataFrame, scene: pd.DataFram
     for (t0, label), t1 in zip(m[["t_s", "label"]].itertuples(index=False), ends):
         a, b = t0 + settle_s, t1 - end_trim_s
         p = pupil[(pupil.t_s >= a) & (pupil.t_s <= b) & pupil.valid]
-        s = scene[(scene.t_s >= a) & (scene.t_s <= b)].dropna()
+        s = scene[(scene.t_s >= a) & (scene.t_s <= b)]
+        if "marker_id" in scene:
+            s = s[s.marker_id == (marker_for_label or {}).get(label, 0)]
+        s = s.dropna()
         if len(p) < 5 or len(s) < 3:
             continue
         rows.append({"label": label, "pupil_x": p.cx.median(), "pupil_y": p.cy.median(),

@@ -1,4 +1,4 @@
-"""Command-line entry point: eyetrack probe | live | record | realtime-bench | calibrate | process | check | benchmark."""
+"""Command-line entry point: eyetrack ui | probe | preview | live | record | board | calibrate | process | check | benchmark."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from pathlib import Path
 
 import yaml
 
+from .capture.recorder import MODES
 from .config import load_config
 
 
@@ -51,7 +52,8 @@ def cmd_live(args, cfg):
         cam = ReplayCamera(video, ts, speed=args.speed)
     else:
         cam = Camera.from_config(cfg["eye_camera"], "eye")
-    proc = RealtimeProcessor(cfg, None, backend=args.backend, eye_model=_eye_model_arg(args, cfg),
+    eye_model = _eye_model_arg(args, cfg)
+    proc = RealtimeProcessor(cfg, None, backend=args.backend, eye_model=eye_model,
                              fps=cfg["eye_camera"]["fps"]).start()
     cam.on_frame = proc.submit
     cam.start()
@@ -70,7 +72,7 @@ def cmd_live(args, cfg):
                 if cv2.waitKey(5) & 0xFF == ord("q"):
                     break
                 continue
-            vis = draw_live(f.image, row, mirror)
+            vis = draw_live(f.image, row, mirror, eye_model)
             now = time.perf_counter()
             if now - t_last >= 1:
                 fps = (cam.frame_count - n_last) / (now - t_last)
@@ -108,7 +110,28 @@ def cmd_record(args, cfg):
     from .capture.recorder import record
     record(cfg, args.name, args.duration, use_scene=not args.eye_only, preview=not args.no_preview,
            realtime=False if args.no_realtime else None, eye_model=_eye_model_arg(args, cfg),
-           backend=args.backend)
+           backend=args.backend, mode=args.mode)
+
+
+def cmd_preview(args, cfg):
+    from .capture.multiview import preview
+    preview(cfg, args.mode)
+
+
+def cmd_board(args, cfg):
+    from .calibration.board import write_board_pdf
+    b = cfg["calibration"]["board"]
+    out = Path(args.out or Path(cfg["recording"]["output_dir"]) / "calibration_board.pdf")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    d = args.distance_cm or b["distance_cm"]
+    write_board_pdf(out, d, args.spread_deg or b["spread_deg"], args.marker_cm or b["marker_cm"],
+                    cfg["calibration"]["aruco_dict"])
+    print(f"Wrote {out}. Print at 100% scale and follow the layout on page 1.")
+
+
+def cmd_ui(args, cfg):
+    from .ui import run_ui
+    run_ui(args.config)
 
 
 def cmd_realtime_bench(args, cfg):
@@ -148,12 +171,21 @@ def cmd_calibrate(args, cfg):
     if args.session:
         session = Path(args.session)
     else:
-        labels = ([f"cal_{i}" for i in range(len(CALIBRATION_POINTS))] +
-                  [f"val_{i}" for i in range(len(VALIDATION_POINTS))])
-        seq = TargetSequence(CALIBRATION_POINTS + VALIDATION_POINTS, labels, tuple(args.screen), args.dwell,
-                             dict_name=cfg["calibration"]["aruco_dict"])
-        session = record(cfg, name="calibration", display=seq)
-    calibrate_from_session(session, cfg)
+        if args.mode in ("1", "2eyes"):
+            raise SystemExit("Calibration needs the scene camera: use --mode 2 or --mode 3.")
+        if args.board:
+            from .calibration.board import BoardSequence
+            b = cfg["calibration"]["board"]
+            seq = BoardSequence(dwell_s=args.dwell or b["dwell_s"], screen=tuple(args.screen), speak=not args.quiet,
+                                distance_cm=args.distance_cm or b["distance_cm"], spread_deg=b["spread_deg"])
+        else:
+            labels = ([f"cal_{i}" for i in range(len(CALIBRATION_POINTS))] +
+                      [f"val_{i}" for i in range(len(VALIDATION_POINTS))])
+            seq = TargetSequence(CALIBRATION_POINTS + VALIDATION_POINTS, labels, tuple(args.screen), args.dwell or 2.0,
+                                 dict_name=cfg["calibration"]["aruco_dict"])
+        name = "calibration_check" if args.check_with else "calibration"
+        session = record(cfg, name=name, display=seq, mode=args.mode or "2")
+    calibrate_from_session(session, cfg, check_with=args.check_with)
 
 
 def cmd_process(args, cfg):
@@ -241,7 +273,24 @@ def main(argv=None):
     s.add_argument("--no-realtime", action="store_true", help="don't process frames live (no live_pupil.csv)")
     s.add_argument("--backend", choices=["thread", "process"], help="real-time worker (default: config realtime.backend)")
     s.add_argument("--eye-model", help="session folder / metrics_summary.json with a fitted eye model: live yaw/pitch")
+    s.add_argument("--mode", choices=list(MODES), help="cameras: 1 = eye, 2 = eye + scene, 2eyes = both eyes, "
+                                                        "3 = both eyes + scene (default: 2, or 1 with --eye-only)")
     s.set_defaults(func=cmd_record)
+
+    s = sub.add_parser("preview", help="live view of every camera in a mode, with pupil detection on the eyes")
+    s.add_argument("--mode", choices=list(MODES), default="3")
+    s.set_defaults(func=cmd_preview)
+
+    s = sub.add_parser("board", help="write a printable calibration board (PDF) for `calibrate --board`")
+    s.add_argument("--out", help="PDF path (default: <recording.output_dir>/calibration_board.pdf)")
+    s.add_argument("--distance-cm", type=float, help="eye to board (default: calibration.board.distance_cm)")
+    s.add_argument("--spread-deg", type=float, help="outer targets' angle from the centre")
+    s.add_argument("--marker-cm", type=float, help="printed marker width")
+    s.set_defaults(func=cmd_board)
+
+    s = sub.add_parser("ui", help="window for choosing the camera mode and running preview, record, calibrate "
+                                  "and process")
+    s.set_defaults(func=cmd_ui)
 
     s = sub.add_parser("realtime-bench", help="replay a recorded eye video through the live pipeline; report fps, "
                                               "dropped frames and latency")
@@ -257,10 +306,17 @@ def main(argv=None):
     s.add_argument("--out", help="output root (default: recording.output_dir)")
     s.set_defaults(func=cmd_realtime_bench)
 
-    s = sub.add_parser("calibrate", help="show targets full-screen, record, fit pupil->scene mapping")
+    s = sub.add_parser("calibrate", help="record gaze at known targets and fit gaze -> scene-camera mapping per eye")
     s.add_argument("--session", help="re-fit from an existing calibration recording instead of recording")
+    s.add_argument("--mode", choices=["2", "3"], help="2 = one eye + scene (default), 3 = both eyes + scene")
+    s.add_argument("--board", action="store_true", help="use the printed board (`eyetrack board`) instead of "
+                                                        "targets on the laptop screen")
+    s.add_argument("--distance-cm", type=float, help="--board: eye to board (default calibration.board.distance_cm)")
+    s.add_argument("--quiet", action="store_true", help="--board: don't speak the marker numbers")
+    s.add_argument("--check-with", metavar="CALIBRATION_JSON",
+                   help="score an existing calibration on this session instead of fitting (parallax check)")
     s.add_argument("--screen", type=int, nargs=2, default=[1440, 900], metavar=("W", "H"))
-    s.add_argument("--dwell", type=float, default=2.0, help="seconds per target")
+    s.add_argument("--dwell", type=float, help="seconds per target (default 2 on screen, calibration.board.dwell_s)")
     s.set_defaults(func=cmd_calibrate)
 
     s = sub.add_parser("process", help="compute pupil, blink, saccade/fixation (and gaze) metrics")

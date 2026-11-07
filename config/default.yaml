@@ -21,18 +21,43 @@ eye_camera:
                         # null = off
   mirror_preview: true  # show the eye mirrored, like Photo Booth; recordings and results are unchanged
 
-scene_camera:
-  index: 1              # GC0308 (cover/disable its IR LEDs when used as scene cam)
+# Second eye camera, for two-eye (binocular) recordings: `--mode 2eyes` or `--mode 3`. Same model as eye_camera
+# (U20CAM-9281M). Both cameras share one USB vendor/product ID, so the uvc block below sets exposure on every
+# camera with that ID. macOS gives no stable way to tell two identical cameras apart, so check which index is
+# which eye in `eyetrack ui` (Scan cameras) or `eyetrack preview` after plugging them in.
+eye2_camera:
+  index: 2
+  side: right           # eye_camera is the left eye in two-eye mode; used for labels only
   width: 640
-  height: 480
+  height: 400
+  fps: 120
+  fourcc: MJPG
+  exposure: null
+  uvc:
+    vendor_id: 0x0c45
+    product_id: 0x636d
+    exposure_ms: 8
+    gain: null
+  flip: false
+  watchdog_min_fps: 100
+  mirror_preview: true
+
+scene_camera:
+  index: 1              # forward-facing (scene) camera
+  width: 1280           # 16:9 mode of a 1080p UVC webcam; 640x480 for 4:3 cameras
+  height: 720
   fps: 30
   fourcc: MJPG
   exposure: null
-  flip: false
+  flip: false           # set true if the camera is mounted upside down
+  # Diagonal field of view, used only to report calibration errors in degrees (pinhole model, as in
+  # JEOresearch's FrontCameraTracker, whose default is 60). Measure your camera; see docs/scene-camera.md.
+  diagonal_fov_deg: 60
 
 recording:
   output_dir: data
   eye_codec: MJPG       # near-lossless and cheap to encode at high fps
+  eye2_codec: MJPG
   scene_codec: MJPG
 
 realtime:
@@ -187,5 +212,17 @@ digit_span:
 
 calibration:
   aruco_dict: DICT_4X4_50
+  # Gaze -> scene-camera pixel mapping, fitted per eye (docs/scene-camera.md). Both are fitted and reported on
+  # every calibration; this picks the one `eyetrack process` uses.
+  #   jeo:  JEOresearch FrontCameraTracker: eye-model gaze direction -> tangent plane -> 2x2 matrix -> pixel
+  #   poly: 2nd-order polynomial from pupil position (eye-image px) to scene px
+  method: jeo
   poly_degree: 2
-  scene_hfov_deg: 60              # GC0308 horizontal field of view, used to convert px error to degrees
+  settle_s: 0.6         # skip the first 0.6 s of each target (the eye is still moving to it)
+  # Printed calibration board (`eyetrack board`, `eyetrack calibrate --board`). Marker IDs 0-8 form a 3x3
+  # calibration grid, 9-12 sit between them and are used only to measure accuracy.
+  board:
+    distance_cm: 100    # eye to board
+    spread_deg: 20      # outer targets this far from the centre target
+    marker_cm: 8        # printed marker width
+    dwell_s: 2.5        # seconds per target

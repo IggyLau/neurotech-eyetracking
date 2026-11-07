@@ -20,4 +20,11 @@ licensed under the MIT License:
   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
   SOFTWARE.
 
-Adapted files: src/eyetrack/pupil/detector.py, src/eyetrack/pupil/eye_model.py
+Adapted files:
+  src/eyetrack/pupil/detector.py          from OrloskyPupilDetector.py
+  src/eyetrack/pupil/eye_model.py         from 3DTracker/Orlosky3DEyeTracker.py
+  src/eyetrack/calibration/scene.py       from FrontCameraTracker/Orlosky3DEyeTrackerFrontCamera.py
+                                          (project_gaze_to_tangent, build_camera_calibration,
+                                          camera_pixel_ray, camera_angular_error_degrees) and
+                                          VREyeTracker/EyeTrackerStereo.cs (two-eye averaging)
+  src/eyetrack/calibration/board.py       calibration order from FrontCameraTracker

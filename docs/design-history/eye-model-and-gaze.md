@@ -75,6 +75,30 @@ position into yaw and pitch. **It is known to be wrong for our camera geometry**
 - This is a stopgap. Pupil size changes with light, so the fallback radius shifts between sessions; a measured
   `radius_px` is still the fix.
 
+### 7. Scene camera, two eyes and JEO's calibration (2026-11-07)
+- **Why now:** the next frame has two eye cameras (both U20CAM-9281M) and a scene camera. The goal for this step
+  is a scene-camera image with the gaze drawn on it.
+- **Two eyes:** recording takes a camera mode (1 = eye, 2 = eye + scene, 2eyes, 3 = both eyes + scene). The second
+  eye is processed like the first, into `<session>/eye2/`, and the two gaze points are averaged per frame.
+  Asymmetric camera placement is handled by fitting each eye on its own; nothing assumes the two cameras mirror
+  each other.
+- **Mapping:** ported JEO's FrontCameraTracker calibration (eye-model gaze direction -> tangent plane -> 2x2 matrix
+  -> pixel) instead of writing a new one, and kept the older polynomial (pupil px -> scene px) next to it. Both
+  are fitted and reported on every calibration. `jeo` is the default because it's JEO's tested approach; the
+  polynomial doesn't depend on the eye model, so it may do better while the radius is unreliable (iteration 5).
+  Which is better on real data is open.
+- **Targets:** a printed board of ArUco markers at a fixed distance (100 cm, outer markers at ±20°), instead of
+  JEO's finger held over dots on the image. The markers are found in every scene frame, so head movement during
+  calibration doesn't shift the targets. Four markers are held out to measure accuracy.
+- **Parallax:** the scene camera sits a few cm from each eye, so accuracy depends on distance. `--check-with`
+  scores an existing calibration on a session at another distance (the half-size board at 50 cm).
+- **Tests:** synthetic two-eye session with the eye cameras at 20° and 30° pitch, 8° yaw apart, different eyeball
+  centres and radii, and the head turning ±2°. Held-out error is under 0.3° for each eye, both mappings and
+  combined, and the combined gaze lands within 12 px of the true target. Synthetic eyes match the eye model
+  exactly, so these numbers say the code is right, not how accurate real data will be.
+- **Not measured yet:** no recording with three mounted cameras exists. The scene camera's field of view isn't
+  measured (errors in degrees use JEO's 60° default), and its lens isn't undistorted.
+
 ## Planned
 1. **9-point screen calibration**, with 4–5 extra points held out to measure accuracy, repeated at the end for
    drift. Map pupil position to screen degrees with the existing polynomial mapper. This gives real degrees and

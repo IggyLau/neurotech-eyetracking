@@ -126,10 +126,17 @@ class ReplayCamera:
         self.stop()
 
 
-def draw_live(img: np.ndarray, row: dict | None, mirror: bool = False) -> np.ndarray:
-    """Preview image with the live result drawn on it (drawn before mirroring, text after)."""
+def draw_live(img: np.ndarray, row: dict | None, mirror: bool = False, eye_model=None) -> np.ndarray:
+    """Preview image with the live result drawn on it (drawn before mirroring, text after).
+
+    eye_model: also draw the eyeball and the gaze ray from its centre through the pupil (as JEO's tracker does).
+    """
     out = img.copy() if img.ndim == 3 else cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
     found = row is not None and row["found"]
+    if eye_model is not None:
+        from ..viz.plots import draw_gaze_ray
+        draw_gaze_ray(out, eye_model, row["cx"] if found and row["valid"] else np.nan,
+                      row["cy"] if found and row["valid"] else np.nan)
     if found:
         colour = (20, 255, 255) if row["valid"] else (0, 140, 255)
         cv2.ellipse(out, row["ellipse"], colour, 2)     # raw cv2 RotatedRect (not written to the CSV)

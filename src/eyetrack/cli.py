@@ -115,7 +115,7 @@ def cmd_record(args, cfg):
 
 def cmd_preview(args, cfg):
     from .capture.multiview import preview
-    preview(cfg, args.mode)
+    preview(cfg, args.mode, calibration=args.calibration)
 
 
 def cmd_dashboard(args, cfg):
@@ -284,6 +284,8 @@ def main(argv=None):
 
     s = sub.add_parser("preview", help="live view of every camera in a mode, with pupil detection on the eyes")
     s.add_argument("--mode", choices=list(MODES), default="3")
+    s.add_argument("--calibration", metavar="CALIBRATION_JSON",
+                   help="draw each eye's eyeball and gaze ray, using the eye models in this calibration.json")
     s.set_defaults(func=cmd_preview)
 
     s = sub.add_parser("dashboard", help="live camera health: frame rate, drops, brightness; pupil, confidence "

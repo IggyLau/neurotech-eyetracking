@@ -65,6 +65,7 @@ On macOS, start it from Terminal.app so it can use the cameras.
 
 ```bash
 eyetrack preview --mode 3                       # live view of all three cameras
+eyetrack preview --mode 3 --calibration data/<cal-session>/calibration.json   # plus each eye's gaze ray
 eyetrack record --mode 3 --name task1           # record both eyes + scene
 eyetrack board                                  # printable calibration board (PDF)
 eyetrack calibrate --mode 3 --board             # calibrate with the board on the wall
@@ -85,7 +86,7 @@ from the centre at 100 cm (`calibration.board`). During `calibrate --board` the 
 number out loud, so the wearer can keep looking at the wall.
 
 **Screen targets.** Without `--board`, a marker moves across the laptop screen (9 calibration and 5 accuracy
-positions). The calibration distance is then the screen distance, about 50-60 cm.
+positions). Look at the red dot in its centre. The calibration distance is then the screen distance, about 50-60 cm.
 
 **What's fitted.** For each eye camera, two mappings are fitted and both are reported:
 
@@ -103,6 +104,12 @@ cameras don't need to be mounted symmetrically.
 combined, on the calibration targets and on the held-out accuracy targets. Errors in degrees use a pinhole model
 with `scene_camera.diagonal_fov_deg` (60 by default, as in JEO's code). Set it to your camera's field of view;
 the accuracy numbers in degrees are only as good as that value.
+
+**Gaze rays in the preview.** After calibrating, `preview --calibration` draws each eye's eyeball outline and
+a line from the eyeball centre through the pupil, from the eye model that calibration fitted. The line is drawn
+only when the pupil's confidence is at least `pupil.min_confidence`. It shows the eye model's gaze direction,
+not where you're looking in the scene. If the outline doesn't sit on the eyeball, the `jeo` mapping will be
+off too.
 
 ## Parallax and calibration distance
 

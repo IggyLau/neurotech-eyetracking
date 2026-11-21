@@ -1,7 +1,8 @@
 """Live view of every camera in a mode, side by side, with pupil detection on the eye cameras.
 
 For checking which index is which camera, aiming the cameras, and seeing that every stream runs at its frame
-rate before recording. Nothing is saved.
+rate before recording. Nothing is saved. With a calibration.json, each eye also gets its eyeball outline and the
+gaze ray from the eyeball centre through the pupil, from the eye model that calibration was fitted with.
 """
 
 from __future__ import annotations
@@ -26,8 +27,29 @@ def _tile(img: np.ndarray, label: str) -> np.ndarray:
     return t
 
 
-def preview(cfg: dict, mode: str = "3"):
+def eye_models_from_calibration(path) -> dict:
+    """role -> EyeModel from each eye's jeo mapping in a calibration.json (eyes without one are left out)."""
+    from ..calibration.scene import Calibration
+    cal = Calibration.load(path)
+    return {role: maps["jeo"].eye_model for role, maps in cal.eyes.items() if maps.get("jeo") is not None}
+
+
+def draw_eye(img: np.ndarray, r, eye_model=None, min_confidence: float = 0.5) -> np.ndarray:
+    """Pupil ellipse, and the gaze ray when there's an eye model and the pupil is trusted."""
+    vis = draw_result(img, r)
+    if eye_model is None:
+        return vis
+    from ..viz.plots import draw_gaze_ray
+    ok = r.found and r.confidence >= min_confidence
+    return draw_gaze_ray(vis, eye_model, r.cx if ok else np.nan, r.cy if ok else np.nan)
+
+
+def preview(cfg: dict, mode: str = "3", calibration=None):
     roles = mode_roles(mode)
+    models = eye_models_from_calibration(calibration) if calibration else {}
+    for role in roles:
+        if role.startswith("eye") and calibration and role not in models:
+            print(f"  {role}: no eye model in {calibration}, showing the pupil only")
     cams = {}
     try:
         for role in roles:
@@ -59,7 +81,7 @@ def preview(cfg: dict, mode: str = "3"):
                     if f.index != idx:
                         img = cv2.flip(f.image, 1) if cfg[f"{role}_camera"].get("mirror_preview") else f.image
                         r = detect_pupil(img, params)
-                        vis = draw_result(img, r)
+                        vis = draw_eye(img, r, models.get(role), cfg["pupil"]["min_confidence"])
                         last[role] = (f.index, vis)
                     tiles.append(_tile(vis, label))
                 else:

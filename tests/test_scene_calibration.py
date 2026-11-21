@@ -2,6 +2,8 @@
 
 import json
 
+import cv2
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -139,3 +141,32 @@ def test_process_draws_combined_gaze_on_the_scene(board_session):
     assert np.median(err) < 12, np.median(err)
     meta = json.loads((session / "metrics_summary.json").read_text())
     assert meta["eye"] == "eye"
+
+
+def test_screen_target_dot_is_bigger_and_marker_still_found():
+    from eyetrack.calibration.targets import SCREEN_DOT_RADIUS, TargetSequence, CALIBRATION_POINTS
+    seq = TargetSequence(CALIBRATION_POINTS, screen=(1470, 956))
+    img, label = seq.frame(2.5)
+    red = (img[:, :, 2] == 255) & (img[:, :, 0] == 0)
+    assert label == "cal_0" and abs(red.sum() - np.pi * SCREEN_DOT_RADIUS**2) < 0.15 * np.pi * SCREEN_DOT_RADIUS**2
+    det = cv2.aruco.ArucoDetector(cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50))
+    assert det.detectMarkers(img)[1] is not None
+
+
+def test_preview_draws_gaze_ray_from_calibration_eye_models(board_session):
+    from eyetrack.capture.multiview import draw_eye, eye_models_from_calibration
+    from eyetrack.pipeline import calibrate_from_session
+    from eyetrack.pupil.detector import DetectorParams, detect_pupil
+    from synthetic import gaze_to_eye_image
+    session, _ = board_session
+    cfg = load_config()
+    if not (session / "calibration.json").exists():
+        calibrate_from_session(session, cfg)
+    models = eye_models_from_calibration(session / "calibration.json")
+    assert set(models) == {"eye", "eye2"}
+    img = gaze_to_eye_image(10, 0, {"center": (320, 200), "radius": 110, "pitch": 20, "yaw": 0})
+    r = detect_pupil(img, DetectorParams.from_config(cfg["pupil"]))
+    plain = draw_eye(img, r)
+    with_ray = draw_eye(img, r, models["eye"])
+    assert (with_ray != plain).any()                               # eyeball and ray drawn
+    assert (draw_eye(img, r, models["eye"], min_confidence=1.1) != plain).any()   # outline even when untrusted

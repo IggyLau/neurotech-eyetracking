@@ -20,12 +20,19 @@ def get_dictionary(name: str = "DICT_4X4_50"):
     return cv2.aruco.getPredefinedDictionary(getattr(cv2.aruco, name))
 
 
-def marker_image(size: int = 220, marker_id: int = 0, dict_name: str = "DICT_4X4_50") -> np.ndarray:
+# Red dot on the on-screen target: radius 20 px on the 220 px marker (was 8 px, too small to find quickly).
+# ArUco still finds the marker with a dot up to radius 24; from 28 the dot hides too much of the pattern.
+SCREEN_DOT_RADIUS = 20
+
+
+def marker_image(size: int = 220, marker_id: int = 0, dict_name: str = "DICT_4X4_50",
+                 dot_radius: int | None = None) -> np.ndarray:
+    """ArUco marker with a white border and a red dot at its centre. dot_radius: px (default size // 25)."""
     m = cv2.aruco.generateImageMarker(get_dictionary(dict_name), marker_id, size)
     m = cv2.copyMakeBorder(m, size // 8, size // 8, size // 8, size // 8, cv2.BORDER_CONSTANT, value=255)
     m = cv2.cvtColor(m, cv2.COLOR_GRAY2BGR)
     c = m.shape[0] // 2
-    cv2.circle(m, (c, c), max(4, size // 25), (0, 0, 255), -1)
+    cv2.circle(m, (c, c), dot_radius or max(4, size // 25), (0, 0, 255), -1)
     return m
 
 
@@ -39,7 +46,7 @@ class TargetSequence:
         self.w, self.h = screen
         self.dwell = dwell_s
         self.lead_in = lead_in_s
-        self.marker = marker_image(dict_name=dict_name)
+        self.marker = marker_image(dict_name=dict_name, dot_radius=SCREEN_DOT_RADIUS)
 
     def frame(self, elapsed: float):
         canvas = np.full((self.h, self.w, 3), 128, np.uint8)
